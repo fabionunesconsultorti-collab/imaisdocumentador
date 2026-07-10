@@ -1,0 +1,193 @@
+name: Build Multiplataforma
+
+on:
+  push:
+    tags:
+      - 'v*'          # Dispara ao criar tag como v1.0.0
+  workflow_dispatch:  # Permite executar manualmente pelo GitHub
+
+permissions:
+  contents: write   # Necessário para criar Release
+
+jobs:
+  # ─── Linux ───────────────────────────────────────────────────────────────────
+  build-linux:
+    name: Build Ubuntu
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Instalar dependências do sistema
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y python3-tk python3-dev upx-ucl
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar dependências Python
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build com PyInstaller
+        run: pyinstaller documentador.spec --noconfirm --clean
+
+      - name: Empacotar como .tar.gz
+        run: |
+          chmod +x dist/documentador
+          mkdir -p dist/Documentador-Linux
+          cp dist/documentador dist/Documentador-Linux/
+          
+          cat > dist/Documentador-Linux/documentador.desktop << 'EOF'
+          [Desktop Entry]
+          Name=Documentador de Processos
+          Comment=Ferramenta de documentação de processos ERP
+          Exec=./documentador
+          Terminal=false
+          Type=Application
+          Categories=Office;Utility;
+          EOF
+          
+          tar -czf dist/Documentador-Linux.tar.gz -C dist Documentador-Linux
+
+      - name: Upload artefato Linux
+        uses: actions/upload-artifact@v4
+        with:
+          name: Documentador-Linux
+          path: dist/Documentador-Linux.tar.gz
+          retention-days: 30
+
+  # ─── macOS ───────────────────────────────────────────────────────────────────
+  build-macos:
+    name: Build macOS
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Instalar UPX e create-dmg
+        run: brew install upx create-dmg
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar dependências Python
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build com PyInstaller
+        run: pyinstaller documentador.spec --noconfirm --clean
+
+      - name: Criar .dmg
+        run: |
+          create-dmg \
+            --volname "Documentador" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "Documentador.app" 175 190 \
+            --hide-extension "Documentador.app" \
+            --app-drop-link 425 190 \
+            dist/Documentador-macOS.dmg \
+            dist/Documentador.app || \
+          # Fallback se create-dmg falhar: empacotar .app como .zip
+          ( cd dist && zip -r Documentador-macOS.zip Documentador.app )
+
+      - name: Upload artefato macOS
+        uses: actions/upload-artifact@v4
+        with:
+          name: Documentador-macOS
+          path: |
+            dist/Documentador-macOS.dmg
+            dist/Documentador-macOS.zip
+          retention-days: 30
+
+  # ─── Windows ─────────────────────────────────────────────────────────────────
+  build-windows:
+    name: Build Windows
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar dependências Python
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build com PyInstaller
+        run: pyinstaller documentador.spec --noconfirm --clean
+
+      - name: Renomear executável com versão
+        run: |
+          $tag = "${{ github.ref_name }}"
+          if ($tag -notlike "v*") { $tag = "dev" }
+          Copy-Item "dist\Documentador.exe" "dist\Documentador-Windows-$tag.exe"
+
+      - name: Upload artefato Windows
+        uses: actions/upload-artifact@v4
+        with:
+          name: Documentador-Windows
+          path: dist/Documentador-Windows*.exe
+          retention-days: 30
+
+  # ─── Release automático ──────────────────────────────────────────────────────
+  release:
+    name: Criar Release GitHub
+    needs: [build-linux, build-macos, build-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Download todos os artefatos
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Listar artefatos
+        run: find artifacts/ -type f
+
+      - name: Criar Release com todos os binários
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Documentador ${{ github.ref_name }}"
+          body: |
+            ## Documentador de Processos ERP — ${{ github.ref_name }}
+            
+            ### Downloads
+            
+            | Plataforma | Arquivo | Notas |
+            |---|---|---|
+            | 🐧 Linux (Ubuntu 22+) | `Documentador-Linux.tar.gz` | Extraia e execute `./documentador` |
+            | 🍎 macOS (10.15+) | `Documentador-macOS.dmg` | Abra o DMG e arraste para Aplicativos |
+            | 🪟 Windows 10/11 | `Documentador-Windows-*.exe` | Execute diretamente (sem instalação) |
+            
+            ### Dependências de runtime (Linux apenas)
+            Para colar prints via clipboard no Linux, instale **uma** das ferramentas:
+            ```bash
+            # Wayland
+            sudo apt install wl-clipboard
+            # X11
+            sudo apt install xclip
+            ```
+          files: artifacts/**/*
+          draft: false
+          prerelease: false

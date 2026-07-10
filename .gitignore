@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Ambiente virtual
+venv/
+.venv/
+env/
+
+# PyInstaller
+build/
+dist/
+*.spec.log
+
+# Arquivos temporários do projeto
+verificacao_resultado.*
+test_document.docp
+test_output.*
+
+# IDEs
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# macOS
+.DS_Store
+*.DS_Store
+
+# Windows
+Thumbs.db
+desktop.ini
