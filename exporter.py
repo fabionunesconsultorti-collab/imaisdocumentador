@@ -3,6 +3,7 @@ import os
 import base64
 import math
 import tempfile
+import utils
 from PIL import Image, ImageDraw, ImageFont
 
 # Importações seguras do reportlab
@@ -245,6 +246,13 @@ def export_to_html(document, filepath):
             padding: 20px;
             color: #888888;
             font-size: 13px;
+            border-top: 1px solid #e2e8f0;
+        }
+        .footer-logo {
+            display: block;
+            margin: 10px auto;
+            max-width: 80px;
+            height: auto;
         }
     </style>
 </head>
@@ -252,12 +260,14 @@ def export_to_html(document, filepath):
     <div class="container">
         <header>
             <h1>__DOC_TITLE__</h1>
-            <div class="meta-info">Documento gerado automaticamente pelo Documentador de Processos</div>
+            <div class="meta-info">__DOC_SUBTITLE__</div>
         </header>
 """
     # Exibir título do documento
     doc_title = getattr(document, "title", "Documentação de Processo ERP")
+    doc_subtitle = getattr(document, "subtitle", "Documento gerado automaticamente pelo Documentador de Processos")
     header_html = header_html.replace("__DOC_TITLE__", doc_title)
+    header_html = header_html.replace("__DOC_SUBTITLE__", doc_subtitle)
     html_content.append(header_html)
 
     for idx, step in enumerate(document.steps):
@@ -286,9 +296,25 @@ def export_to_html(document, filepath):
         </div>
         """)
 
-    html_content.append("""
+    # Converter logo.png para base64 para o rodapé do HTML
+    logo_base64 = ""
+    try:
+        logo_path = utils.get_resource_path(os.path.join("img", "logo.png"))
+        if os.path.exists(logo_path):
+            with open(logo_path, "rb") as image_file:
+                logo_base64 = base64.b64encode(image_file.read()).decode('utf-8')
+    except Exception as e:
+        print(f"Erro ao carregar logo para HTML: {e}")
+        
+    from datetime import datetime
+    current_date = datetime.now().strftime("%d/%m/%Y %H:%M")
+    
+    logo_img_tag = f'<img class="footer-logo" src="data:image/png;base64,{logo_base64}" alt="Logo I+documentador">' if logo_base64 else ''
+    
+    html_content.append(f"""
         <footer>
-            Gerado com o Documentador de Processos CustomTkinter.
+            <p>Gerado em: {current_date}</p>
+            {logo_img_tag}
         </footer>
     </div>
 </body>
@@ -310,6 +336,18 @@ def export_to_svg(document, filepath):
     width = 1000  # Largura padrão das seções do SVG
     current_y = 20
     padding = 30
+    
+    # 0. Título e Subtítulo do Documento no topo do SVG
+    doc_title = getattr(document, "title", "Documentação de Processo ERP")
+    doc_subtitle = getattr(document, "subtitle", "Documento gerado automaticamente pelo Documentador de Processos")
+    
+    svg_elements.append(f'<text x="{padding}" y="{current_y + 30}" font-family="sans-serif" font-size="28" font-weight="bold" fill="#1a73e8">{doc_title}</text>')
+    svg_elements.append(f'<text x="{padding}" y="{current_y + 55}" font-family="sans-serif" font-size="14" fill="#666666">{doc_subtitle}</text>')
+    
+    # Linha divisória após o cabeçalho
+    current_y += 75
+    svg_elements.append(f'<line x1="{padding}" y1="{current_y}" x2="{width - padding}" y2="{current_y}" stroke="#1a73e8" stroke-width="2" />')
+    current_y += 30
     
     # Escrever cabeçalho do SVG temporário e acumular elementos
     for idx, step in enumerate(document.steps):
@@ -429,8 +467,39 @@ def export_to_svg(document, filepath):
             svg_elements.append(f'<line x1="{padding}" y1="{current_y}" x2="{width - padding}" y2="{current_y}" stroke="#eef2f6" stroke-width="2" />')
             current_y += 30
 
-    # Adicionar cabeçalho do arquivo completo
-    header_svg = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {current_y + 20}" width="{width}" height="{current_y + 20}" style="background-color: #f5f7fb;">'
+    # Converter logo.png para base64 para o rodapé do SVG
+    logo_base64 = ""
+    try:
+        logo_path = utils.get_resource_path(os.path.join("img", "logo.png"))
+        if os.path.exists(logo_path):
+            with open(logo_path, "rb") as image_file:
+                logo_base64 = base64.b64encode(image_file.read()).decode('utf-8')
+    except Exception as e:
+        print(f"Erro ao carregar logo para SVG: {e}")
+
+    # 5. Rodapé do SVG
+    current_y += 20
+    # Linha acima do rodapé
+    svg_elements.append(f'<line x1="{padding}" y1="{current_y}" x2="{width - padding}" y2="{current_y}" stroke="#e2e8f0" stroke-width="1" />')
+    current_y += 25
+    
+    # Data no rodapé
+    from datetime import datetime
+    current_date = datetime.now().strftime("%d/%m/%Y %H:%M")
+    svg_elements.append(f'<text x="{padding}" y="{current_y}" font-family="sans-serif" font-size="11" fill="#718096">Gerado em: {current_date}</text>')
+    
+    # Logo do I+documentador no centro do rodapé
+    if logo_base64:
+        logo_w = 60
+        logo_h = 15
+        logo_x = (width / 2) - (logo_w / 2)
+        logo_y = current_y - 12
+        svg_elements.append(f'<image href="data:image/png;base64,{logo_base64}" x="{logo_x}" y="{logo_y}" width="{logo_w}" height="{logo_h}" />')
+        
+    current_y += 20
+
+    # Adicionar cabeçalho do arquivo completo com a altura final ajustada
+    header_svg = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {current_y}" width="{width}" height="{current_y}" style="background-color: #f5f7fb;">'
     svg_elements.insert(0, header_svg)
     svg_elements.append('</svg>')
     
@@ -453,7 +522,7 @@ def export_to_pdf(document, filepath):
         rightMargin=40,
         leftMargin=40,
         topMargin=40,
-        bottomMargin=40
+        bottomMargin=60
     )
     
     styles = getSampleStyleSheet()
@@ -505,8 +574,9 @@ def export_to_pdf(document, filepath):
     
     # 1. Título do Documento
     doc_title = getattr(document, "title", "Documentação de Processo ERP")
+    doc_subtitle = getattr(document, "subtitle", "Documento gerado automaticamente pelo Documentador de Processos")
     story.append(Paragraph(doc_title, title_style))
-    story.append(Paragraph("Documento gerado automaticamente pelo Documentador de Processos", subtitle_style))
+    story.append(Paragraph(doc_subtitle, subtitle_style))
     
     # Largura disponível da página A4
     # A4 = 595.27 x 841.89 pontos
@@ -566,7 +636,39 @@ def export_to_pdf(document, filepath):
             if idx < len(document.steps) - 1:
                 story.append(Spacer(1, 20))
                 
+        # Função de desenho do rodapé
+        def draw_footer(canvas, pdf_doc):
+            canvas.saveState()
+            
+            # Obter data atual formatada
+            from datetime import datetime
+            current_date = datetime.now().strftime("%d/%m/%Y %H:%M")
+            
+            # Fazer linha separadora acima do rodapé
+            canvas.setStrokeColor(colors.HexColor('#e2e8f0'))
+            canvas.setLineWidth(0.5)
+            canvas.line(40, 45, pdf_doc.pagesize[0] - 40, 45)
+            
+            # Configurar fonte do rodapé
+            canvas.setFont('Helvetica', 8)
+            canvas.setFillColor(colors.HexColor('#718096'))
+            
+            # Desenhar data e número de página
+            canvas.drawString(40, 30, f"Gerado em: {current_date}")
+            canvas.drawRightString(pdf_doc.pagesize[0] - 40, 30, f"Página {pdf_doc.page}")
+            
+            # Adicionar o logo do rodapé
+            try:
+                logo_path = utils.get_resource_path(os.path.join("img", "logo.png"))
+                if os.path.exists(logo_path):
+                    # A4 width = 595.27. Centro = 297.63. Logo width = 60, height = 15
+                    canvas.drawImage(logo_path, 267.63, 23, width=60, height=15, mask='auto')
+            except Exception as e:
+                print(f"Erro ao adicionar logo ao rodapé do PDF: {e}")
+                
+            canvas.restoreState()
+
         # Construir o PDF
-        doc.build(story)
+        doc.build(story, onFirstPage=draw_footer, onLaterPages=draw_footer)
         
     return True

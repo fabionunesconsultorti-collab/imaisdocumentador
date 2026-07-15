@@ -58,6 +58,7 @@ class Document:
         self.filepath = None
         self.changed = False
         self.title = "Documentação de Processo ERP"
+        self.subtitle = "Documento gerado automaticamente pelo Documentador de Processos"
         self.num_arrows = True
 
     def clear(self):
@@ -65,6 +66,7 @@ class Document:
         self.filepath = None
         self.changed = False
         self.title = "Documentação de Processo ERP"
+        self.subtitle = "Documento gerado automaticamente pelo Documentador de Processos"
         self.num_arrows = True
 
     def add_step(self, image: Image.Image, title="", description="") -> Step:
@@ -104,6 +106,7 @@ class Document:
         with zipfile.ZipFile(filepath, 'w', zipfile.ZIP_DEFLATED) as zipf:
             metadata = {
                 "title": self.title,
+                "subtitle": self.subtitle,
                 "num_arrows": self.num_arrows,
                 "steps": []
             }
@@ -145,6 +148,7 @@ class Document:
             metadata = json.loads(metadata_content)
             
             self.title = metadata.get("title", "Documentação de Processo ERP")
+            self.subtitle = metadata.get("subtitle", "Documento gerado automaticamente pelo Documentador de Processos")
             self.num_arrows = metadata.get("num_arrows", True)
             
             for step_data in metadata["steps"]:

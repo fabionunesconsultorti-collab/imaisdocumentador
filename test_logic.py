@@ -12,6 +12,7 @@ class TestDocumentadorLogic(unittest.TestCase):
         
     def test_document_lifecycle(self):
         # 1. Adicionar um passo
+        self.doc.subtitle = "Subtítulo de Teste Específico"
         step = self.doc.add_step(self.test_image, title="Passo Inicial", description="Testando a criação de passos.")
         self.assertEqual(len(self.doc.steps), 1)
         self.assertEqual(self.doc.steps[0].title, "Passo Inicial")
@@ -37,6 +38,7 @@ class TestDocumentadorLogic(unittest.TestCase):
         new_doc.load(test_file)
         
         self.assertEqual(len(new_doc.steps), 1)
+        self.assertEqual(new_doc.subtitle, "Subtítulo de Teste Específico")
         loaded_step = new_doc.steps[0]
         self.assertEqual(loaded_step.title, "Passo Inicial")
         self.assertEqual(loaded_step.description, "Testando a criação de passos.")

@@ -61,6 +61,7 @@ class DocumentadorApp(ctk.CTk):
         # Inicializar variáveis para monitoramento automático
         self.monitoring_clipboard = True
         self.last_clipboard_hash = None
+        self.polling_lock = threading.Lock()
         
         # Binds globais de teclado para colar imagem
         self.bind("<Control-v>", self.paste_image)
@@ -139,6 +140,15 @@ class DocumentadorApp(ctk.CTk):
         self.doc_title_entry.pack(fill="x", pady=(2, 0))
         self.doc_title_entry.insert(0, self.document.title)
         self.doc_title_entry.bind("<KeyRelease>", self.on_doc_title_changed)
+        
+        # Subtítulo da Documentação
+        lbl_doc_subtitle = ctk.CTkLabel(doc_title_frame, text="Subtítulo da Documentação:", font=("Arial", 12, "bold"))
+        lbl_doc_subtitle.pack(anchor="w", pady=(10, 0))
+        
+        self.doc_subtitle_entry = ctk.CTkEntry(doc_title_frame, width=250)
+        self.doc_subtitle_entry.pack(fill="x", pady=(2, 0))
+        self.doc_subtitle_entry.insert(0, self.document.subtitle)
+        self.doc_subtitle_entry.bind("<KeyRelease>", self.on_doc_subtitle_changed)
         
         # Título dos Passos
         lbl_sidebar = ctk.CTkLabel(self.sidebar, text="Passos do Processo", font=("Arial", 16, "bold"))
@@ -345,6 +355,10 @@ class DocumentadorApp(ctk.CTk):
         self.document.title = self.doc_title_entry.get().strip()
         self.mark_as_changed()
 
+    def on_doc_subtitle_changed(self, event=None):
+        self.document.subtitle = self.doc_subtitle_entry.get().strip()
+        self.mark_as_changed()
+
     def toggle_num_arrows(self):
         enabled = self.num_arrows_var.get()
         self.document.num_arrows = enabled
@@ -512,13 +526,18 @@ class DocumentadorApp(ctk.CTk):
         self.title_entry.focus_set()
 
     def paste_image(self, event=None):
-        # Se o foco estiver em um campo de texto, deixa o atalho de teclado funcionar nativamente
+        # Se o foco estiver em um campo de texto ativo, deixa o atalho de teclado funcionar nativamente
         focused = self.focus_get()
         if isinstance(focused, (ctk.CTkEntry, ctk.CTkTextbox, tk.Entry, tk.Text)):
-            return
+            try:
+                if str(focused.cget("state")) != "disabled":
+                    return
+            except Exception:
+                return
             
         img = utils.grab_clipboard_image()
         if img:
+            self.last_clipboard_hash = self.get_image_hash(img)
             self.add_new_step_with_image(img)
         else:
             # Só mostrar aviso se foi invocado manualmente por botão (sem event)
@@ -561,16 +580,14 @@ class DocumentadorApp(ctk.CTk):
     def toggle_clipboard_monitoring(self):
         if self.monitor_switch.get():
             self.monitoring_clipboard = True
-            # Inicializar com o hash atual para ignorar o que já está copiado
-            def init_hash():
-                img = utils.grab_clipboard_image()
-                if img:
-                    self.last_clipboard_hash = self.get_image_hash(img)
-                else:
-                    self.last_clipboard_hash = None
-                # Iniciar polling após hash inicial definido
-                self.after(0, self.poll_clipboard)
-            threading.Thread(target=init_hash, daemon=True).start()
+            # Inicializar com o hash atual na thread principal (rápido)
+            img = utils.grab_clipboard_image()
+            if img:
+                self.last_clipboard_hash = self.get_image_hash(img)
+            else:
+                self.last_clipboard_hash = None
+            # Iniciar polling
+            self.poll_clipboard()
         else:
             self.monitoring_clipboard = False
 
@@ -587,6 +604,8 @@ class DocumentadorApp(ctk.CTk):
             return
 
         def check_in_thread():
+            if not self.polling_lock.acquire(blocking=False):
+                return
             try:
                 img = utils.grab_clipboard_image()
                 if img:
@@ -597,11 +616,12 @@ class DocumentadorApp(ctk.CTk):
             except Exception as e:
                 print(f"Erro ao ler área de transferência: {e}")
             finally:
-                # Agendar próximo ciclo de polling (700ms) na thread principal
-                if self.monitoring_clipboard:
-                    self.after(700, self.poll_clipboard)
+                self.polling_lock.release()
 
         threading.Thread(target=check_in_thread, daemon=True).start()
+        
+        # Agendar próximo ciclo de polling (700ms) na thread principal (100% thread-safe)
+        self.after(700, self.poll_clipboard)
 
     def _on_new_clipboard_image(self, img, current_hash):
         """Chamado na thread principal quando um novo print é detectado no clipboard."""
@@ -611,6 +631,7 @@ class DocumentadorApp(ctk.CTk):
             self.add_new_step_with_image(img)
             # Trazer aplicativo de volta e colocá-lo em foco temporariamente
             self.deiconify()
+            self.update()
             self.lift()
             self.attributes("-topmost", True)
             self.after_idle(self.attributes, "-topmost", False)
@@ -651,7 +672,22 @@ class DocumentadorApp(ctk.CTk):
                 "Tem certeza que deseja excluir o passo selecionado? Esta ação não pode ser desfeita."
             )
             if confirm:
+                try:
+                    deleted_step = self.document.steps[self.current_step_index]
+                    deleted_step_hash = self.get_image_hash(deleted_step.image)
+                except Exception:
+                    deleted_step_hash = None
+
                 self.document.remove_step(self.current_step_index)
+                
+                # Se o print removido era o que estava no clipboard (último hash),
+                # limpar o hash e o clipboard para permitir novas capturas/re-capturas
+                if deleted_step_hash and deleted_step_hash == self.last_clipboard_hash:
+                    self.last_clipboard_hash = None
+                    try:
+                        self.clipboard_clear()
+                    except Exception:
+                        pass
                 
                 # Ajustar índice de seleção
                 if len(self.document.steps) == 0:
@@ -670,6 +706,8 @@ class DocumentadorApp(ctk.CTk):
             self.current_step_index = None
             self.doc_title_entry.delete(0, "end")
             self.doc_title_entry.insert(0, self.document.title)
+            self.doc_subtitle_entry.delete(0, "end")
+            self.doc_subtitle_entry.insert(0, self.document.subtitle)
             self.num_arrows_var.set(self.document.num_arrows)
             self.editor_canvas.set_num_arrows(self.document.num_arrows)
             self.rebuild_sidebar_list()
@@ -687,6 +725,8 @@ class DocumentadorApp(ctk.CTk):
                     self.current_step_index = 0 if len(self.document.steps) > 0 else None
                     self.doc_title_entry.delete(0, "end")
                     self.doc_title_entry.insert(0, self.document.title)
+                    self.doc_subtitle_entry.delete(0, "end")
+                    self.doc_subtitle_entry.insert(0, self.document.subtitle)
                     self.num_arrows_var.set(self.document.num_arrows)
                     self.editor_canvas.set_num_arrows(self.document.num_arrows)
                     self.rebuild_sidebar_list()
