@@ -5,14 +5,38 @@ on:
     tags:
       - 'v*'          # Dispara ao criar tag como v1.0.0
   workflow_dispatch:  # Permite executar manualmente pelo GitHub
+    inputs:
+      version:
+        description: 'Versão do release (ex: v1.0.0)'
+        required: true
+        default: 'v1.0.0'
 
 permissions:
   contents: write   # Necessário para criar Release
 
 jobs:
+  # ─── Determinar Versão ────────────────────────────────────────────────────────
+  get-version:
+    name: Determinar Versão
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.set-version.outputs.version }}
+    steps:
+      - name: Determinar Versão
+        id: set-version
+        run: |
+          VERSION="dev"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          elif [[ "${{ github.ref_name }}" =~ ^v[0-9] ]]; then
+            VERSION="${{ github.ref_name }}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
   # ─── Linux ───────────────────────────────────────────────────────────────────
   build-linux:
     name: Build Ubuntu
+    needs: get-version
     runs-on: ubuntu-latest
 
     steps:
@@ -41,10 +65,11 @@ jobs:
       - name: Empacotar como .tar.gz
         run: |
           chmod +x dist/documentador
-          mkdir -p dist/Documentador-Linux
-          cp dist/documentador dist/Documentador-Linux/
+          PKG_NAME="Documentador-Linux-${{ needs.get-version.outputs.version }}"
+          mkdir -p "dist/$PKG_NAME"
+          cp dist/documentador "dist/$PKG_NAME/"
           
-          cat > dist/Documentador-Linux/documentador.desktop << 'EOF'
+          cat > "dist/$PKG_NAME/documentador.desktop" << 'EOF'
           [Desktop Entry]
           Name=Documentador de Processos
           Comment=Ferramenta de documentação de processos ERP
@@ -54,18 +79,19 @@ jobs:
           Categories=Office;Utility;
           EOF
           
-          tar -czf dist/Documentador-Linux.tar.gz -C dist Documentador-Linux
+          tar -czf "dist/$PKG_NAME.tar.gz" -C dist "$PKG_NAME"
 
       - name: Upload artefato Linux
         uses: actions/upload-artifact@v4
         with:
           name: Documentador-Linux
-          path: dist/Documentador-Linux.tar.gz
+          path: dist/Documentador-Linux-*.tar.gz
           retention-days: 30
 
   # ─── macOS ───────────────────────────────────────────────────────────────────
   build-macos:
     name: Build macOS
+    needs: get-version
     runs-on: macos-latest
 
     steps:
@@ -91,6 +117,7 @@ jobs:
 
       - name: Criar .dmg
         run: |
+          VERSION="${{ needs.get-version.outputs.version }}"
           create-dmg \
             --volname "Documentador" \
             --window-pos 200 120 \
@@ -99,23 +126,24 @@ jobs:
             --icon "Documentador.app" 175 190 \
             --hide-extension "Documentador.app" \
             --app-drop-link 425 190 \
-            dist/Documentador-macOS.dmg \
+            "dist/Documentador-macOS-$VERSION.dmg" \
             dist/Documentador.app || \
           # Fallback se create-dmg falhar: empacotar .app como .zip
-          ( cd dist && zip -r Documentador-macOS.zip Documentador.app )
+          ( cd dist && zip -r "Documentador-macOS-$VERSION.zip" Documentador.app )
 
       - name: Upload artefato macOS
         uses: actions/upload-artifact@v4
         with:
           name: Documentador-macOS
           path: |
-            dist/Documentador-macOS.dmg
-            dist/Documentador-macOS.zip
+            dist/Documentador-macOS-*.dmg
+            dist/Documentador-macOS-*.zip
           retention-days: 30
 
   # ─── Windows ─────────────────────────────────────────────────────────────────
   build-windows:
     name: Build Windows
+    needs: get-version
     runs-on: windows-latest
 
     steps:
@@ -138,23 +166,22 @@ jobs:
 
       - name: Renomear executável com versão
         run: |
-          $tag = "${{ github.ref_name }}"
-          if ($tag -notlike "v*") { $tag = "dev" }
+          $tag = "${{ needs.get-version.outputs.version }}"
           Copy-Item "dist\Documentador.exe" "dist\Documentador-Windows-$tag.exe"
 
       - name: Upload artefato Windows
         uses: actions/upload-artifact@v4
         with:
           name: Documentador-Windows
-          path: dist/Documentador-Windows*.exe
+          path: dist/Documentador-Windows-*.exe
           retention-days: 30
 
   # ─── Release automático ──────────────────────────────────────────────────────
   release:
     name: Criar Release GitHub
-    needs: [build-linux, build-macos, build-windows]
+    needs: [get-version, build-linux, build-macos, build-windows]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
 
     steps:
       - name: Download todos os artefatos
@@ -168,24 +195,25 @@ jobs:
       - name: Criar Release com todos os binários
         uses: softprops/action-gh-release@v2
         with:
-          name: "Documentador ${{ github.ref_name }}"
+          tag_name: ${{ needs.get-version.outputs.version }}
+          name: "Documentador ${{ needs.get-version.outputs.version }}"
           body: |
-            ## Documentador de Processos ERP — ${{ github.ref_name }}
+            ## Documentador de Processos ERP — ${{ needs.get-version.outputs.version }}
             
             ### Downloads
             
-            | Plataforma | Arquivo | Notas |
-            |---|---|---|
-            | 🐧 Linux (Ubuntu 22+) | `Documentador-Linux.tar.gz` | Extraia e execute `./documentador` |
-            | 🍎 macOS (10.15+) | `Documentador-macOS.dmg` | Abra o DMG e arraste para Aplicativos |
-            | 🪟 Windows 10/11 | `Documentador-Windows-*.exe` | Execute diretamente (sem instalação) |
+            | Plataforma | Notas |
+            |---|---|
+            | 🐧 **Linux** (Ubuntu 22+) | Baixe `Documentador-Linux-${{ needs.get-version.outputs.version }}.tar.gz`, extraia e execute `./documentador` |
+            | 🍎 **macOS** (10.15+) | Baixe `Documentador-macOS-${{ needs.get-version.outputs.version }}.dmg` (ou o `.zip`), abra e arraste para a pasta de Aplicativos |
+            | 🪟 **Windows** 10/11 | Baixe `Documentador-Windows-${{ needs.get-version.outputs.version }}.exe` e execute diretamente (sem instalação) |
             
             ### Dependências de runtime (Linux apenas)
-            Para colar prints via clipboard no Linux, instale **uma** das ferramentas:
+            Para colar imagens via clipboard no Linux, certifique-se de ter instalado:
             ```bash
-            # Wayland
+            # Wayland (ex: Ubuntu 22.04+)
             sudo apt install wl-clipboard
-            # X11
+            # X11 (ex: Ubuntu antigo, Linux Mint)
             sudo apt install xclip
             ```
           files: artifacts/**/*
