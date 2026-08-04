@@ -10,12 +10,30 @@ from PIL import Image, ImageDraw, ImageFont
 try:
     from reportlab.lib.pagesizes import letter, A4
     from reportlab.lib import colors
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage, PageBreak, KeepTogether
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage, PageBreak, KeepTogether, Flowable, Table, TableStyle
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import inch
     REPORTLAB_AVAILABLE = True
 except ImportError:
     REPORTLAB_AVAILABLE = False
+
+
+if REPORTLAB_AVAILABLE:
+    class PageMarker(Flowable):
+        def __init__(self, step_index, page_tracker):
+            super().__init__()
+            self.step_index = step_index
+            self.page_tracker = page_tracker
+            
+        def wrap(self, availWidth, availHeight):
+            return 0, 0
+            
+        def draw(self):
+            # Registrar a página atual no dicionário compartilhado
+            self.page_tracker[self.step_index] = self.canv.getPageNumber()
+else:
+    class PageMarker:
+        pass
 
 
 def get_system_font(size=16):
@@ -281,6 +299,26 @@ def export_to_html(document, filepath):
         step_title = step.title if step.title else f"Passo {idx + 1}"
         description = step.description if step.description else "Nenhuma descrição fornecida."
         
+        # Anexos do passo
+        attachments_html = ""
+        attachments = getattr(step, "attachments", [])
+        if attachments:
+            att_chips = []
+            for att in attachments:
+                att_name = att["filename"]
+                att_b64 = base64.b64encode(att["data"]).decode("utf-8")
+                download_link = f"data:application/octet-stream;base64,{att_b64}"
+                att_chips.append(f'<a href="{download_link}" download="{att_name}" style="display: inline-flex; align-items: center; background-color: #e2e8f0; color: #475569; padding: 4px 10px; border-radius: 9999px; text-decoration: none; font-size: 13px; font-weight: 500; margin-right: 8px; margin-bottom: 8px; transition: background-color 0.2s;"><span style="margin-right: 4px;">📎</span> {att_name}</a>')
+            
+            attachments_html = f"""
+            <div style="margin-top: 15px; border-top: 1px solid #eef2f6; padding-top: 15px;">
+                <span style="font-weight: 600; font-size: 13px; color: #64748b; display: block; margin-bottom: 8px;">Arquivos Anexados:</span>
+                <div style="display: flex; flex-wrap: wrap;">
+                    {"".join(att_chips)}
+                </div>
+            </div>
+            """
+            
         html_content.append(f"""
         <div class="step-card">
             <div class="step-header">
@@ -292,6 +330,7 @@ def export_to_html(document, filepath):
                     <img class="step-image" src="data:image/png;base64,{img_str}" alt="{step_title}">
                 </div>
                 <p class="step-description">{description}</p>
+                {attachments_html}
             </div>
         </div>
         """)
@@ -509,94 +548,159 @@ def export_to_svg(document, filepath):
 
 def export_to_pdf(document, filepath):
     """
-    Exporta o documento para PDF profissional usando a biblioteca reportlab.
+    Exporta o documento para PDF profissional usando a biblioteca reportlab,
+    incluindo um Sumário automático de passos.
     Caso o reportlab não esteja disponível, retorna Falso.
     """
     if not REPORTLAB_AVAILABLE:
         return False
         
-    # Criar documento PDF com margens
-    doc = SimpleDocTemplate(
-        filepath,
-        pagesize=A4,
-        rightMargin=40,
-        leftMargin=40,
-        topMargin=40,
-        bottomMargin=60
-    )
-    
     styles = getSampleStyleSheet()
     
-    # Criar estilos personalizados
-    title_style = ParagraphStyle(
-        'DocTitle',
-        parent=styles['Heading1'],
-        fontName='Helvetica-Bold',
-        fontSize=24,
-        leading=28,
-        textColor=colors.HexColor('#1a73e8'),
-        spaceAfter=15
-    )
+    # Largura disponível da página A4 (595.27 x 841.89 pontos)
+    # Margens: 40 pontos -> Largura = 515.27
+    available_width = 515.27
     
-    subtitle_style = ParagraphStyle(
-        'DocSubtitle',
-        parent=styles['Normal'],
-        fontName='Helvetica',
-        fontSize=11,
-        leading=14,
-        textColor=colors.HexColor('#666666'),
-        spaceAfter=30
-    )
-    
-    step_title_style = ParagraphStyle(
-        'StepTitle',
-        parent=styles['Heading2'],
-        fontName='Helvetica-Bold',
-        fontSize=16,
-        leading=20,
-        textColor=colors.HexColor('#2c3e50'),
-        spaceBefore=10,
-        spaceAfter=10
-    )
-    
-    description_style = ParagraphStyle(
-        'StepDescription',
-        parent=styles['BodyText'],
-        fontName='Helvetica',
-        fontSize=11,
-        leading=15,
-        textColor=colors.HexColor('#4a5568'),
-        spaceBefore=10,
-        spaceAfter=10
-    )
+    # 1. Função auxiliar para desenhar o rodapé (com número de páginas e data)
+    def draw_footer(canvas, pdf_doc):
+        canvas.saveState()
+        from datetime import datetime
+        current_date = datetime.now().strftime("%d/%m/%Y %H:%M")
+        
+        canvas.setStrokeColor(colors.HexColor('#e2e8f0'))
+        canvas.setLineWidth(0.5)
+        canvas.line(40, 45, pdf_doc.pagesize[0] - 40, 45)
+        
+        canvas.setFont('Helvetica', 8)
+        canvas.setFillColor(colors.HexColor('#718096'))
+        
+        canvas.drawString(40, 30, f"Gerado em: {current_date}")
+        canvas.drawRightString(pdf_doc.pagesize[0] - 40, 30, f"Página {pdf_doc.page}")
+        
+        try:
+            logo_path = utils.get_resource_path(os.path.join("img", "logo.png"))
+            if os.path.exists(logo_path):
+                canvas.drawImage(logo_path, 267.63, 23, width=60, height=15, mask='auto')
+        except Exception as e:
+            print(f"Erro ao adicionar logo ao rodapé do PDF: {e}")
+            
+        canvas.restoreState()
 
-    story = []
-    
-    # 1. Título do Documento
-    doc_title = getattr(document, "title", "Documentação de Processo ERP")
-    doc_subtitle = getattr(document, "subtitle", "Documento gerado automaticamente pelo Documentador de Processos")
-    story.append(Paragraph(doc_title, title_style))
-    story.append(Paragraph(doc_subtitle, subtitle_style))
-    
-    # Largura disponível da página A4
-    # A4 = 595.27 x 841.89 pontos
-    available_width = doc.width  # Cerca de 515 pontos
-    
-    # Usar diretório temporário para gerar imagens anexadas
-    with tempfile.TemporaryDirectory() as tmpdir:
+    # 2. Função auxiliar para construir o "story" baseado nos números de páginas conhecidos
+    def build_pdf_story(doc_obj, page_tracker_dict, tmpdir):
+        title_style = ParagraphStyle(
+            'DocTitle',
+            parent=styles['Heading1'],
+            fontName='Helvetica-Bold',
+            fontSize=24,
+            leading=28,
+            textColor=colors.HexColor('#1a73e8'),
+            spaceAfter=15
+        )
+        
+        subtitle_style = ParagraphStyle(
+            'DocSubtitle',
+            parent=styles['Normal'],
+            fontName='Helvetica',
+            fontSize=11,
+            leading=14,
+            textColor=colors.HexColor('#666666'),
+            spaceAfter=15
+        )
+
+        meta_style = ParagraphStyle(
+            'DocMeta',
+            parent=styles['Normal'],
+            fontName='Helvetica-Oblique',
+            fontSize=10,
+            textColor=colors.HexColor('#4a5568'),
+            spaceAfter=25
+        )
+        
+        step_title_style = ParagraphStyle(
+            'StepTitle',
+            parent=styles['Heading2'],
+            fontName='Helvetica-Bold',
+            fontSize=16,
+            leading=20,
+            textColor=colors.HexColor('#2c3e50'),
+            spaceBefore=10,
+            spaceAfter=10
+        )
+        
+        description_style = ParagraphStyle(
+            'StepDescription',
+            parent=styles['BodyText'],
+            fontName='Helvetica',
+            fontSize=11,
+            leading=15,
+            textColor=colors.HexColor('#4a5568'),
+            spaceBefore=10,
+            spaceAfter=10
+        )
+        
+        story_list = []
+        
+        # Título do Documento
+        doc_title = getattr(document, "title", "Documentação de Processo ERP")
+        doc_subtitle = getattr(document, "subtitle", "Documento gerado automaticamente pelo Documentador de Processos")
+        story_list.append(Paragraph(doc_title, title_style))
+        story_list.append(Paragraph(doc_subtitle, subtitle_style))
+        
+        # Metadados
+        category = getattr(document, "category", "")
+        author = getattr(document, "author", "")
+        meta_parts = []
+        if category:
+            meta_parts.append(f"<b>Categoria:</b> {category}")
+        if author:
+            meta_parts.append(f"<b>Autor:</b> {author}")
+        from datetime import datetime
+        current_date = datetime.now().strftime("%d/%m/%Y %H:%M")
+        meta_parts.append(f"<b>Data:</b> {current_date}")
+        meta_html = " | ".join(meta_parts)
+        story_list.append(Paragraph(meta_html, meta_style))
+        
+        # Sumário
+        toc_data = []
+        toc_data.append([Paragraph("<b>Sumário da Documentação</b>", step_title_style), ""])
+        
+        for idx, step in enumerate(document.steps):
+            step_title = step.title if step.title else f"Passo {idx + 1}"
+            page_num = page_tracker_dict.get(idx, "--")
+            page_str = f"Página {page_num}" if page_num != "--" else "--"
+            
+            toc_text = f"<b>Passo {idx + 1}:</b> {step_title}"
+            toc_data.append([Paragraph(toc_text, description_style), page_str])
+            
+        toc_table = Table(toc_data, colWidths=[available_width - 60, 60])
+        toc_table.setStyle(TableStyle([
+            ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TEXTCOLOR', (0, 0), (-1, -1), colors.HexColor('#2c3e50')),
+            ('LINEBELOW', (0, 0), (-1, 0), 1.5, colors.HexColor('#1a73e8')),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ]))
+        story_list.append(toc_table)
+        story_list.append(PageBreak())
+        
+        # Passos
         for idx, step in enumerate(document.steps):
             step_story = []
+            
+            # Marcador de página
+            step_story.append(PageMarker(idx, page_tracker_dict))
             
             # Título do Passo
             step_title = step.title if step.title else f"Passo {idx + 1}"
             step_story.append(Paragraph(f"Passo {idx + 1}: {step_title}", step_title_style))
             
-            # Imagem do Passo fundida com anotações
+            # Imagem do Passo
             num_arrows = getattr(document, "num_arrows", True)
             ann_img = get_annotated_image(step, num_arrows)
             ow, oh = ann_img.size
             
-            # Converter pixels para pontos (ex: 96 DPI -> 1 pixel = 0.75 pontos)
             pixel_scale = 0.75
             natural_w = ow * pixel_scale
             natural_h = oh * pixel_scale
@@ -608,9 +712,8 @@ def export_to_pdf(document, filepath):
                 scale = available_width / ow
                 display_w = available_width
                 display_h = oh * scale
-            
-            # Se for muito alta para caber na página com margens, limitar pela altura
-            max_height = 420  # Cerca de metade de uma página A4
+                
+            max_height = 420
             if display_h > max_height:
                 scale = max_height / oh
                 display_w = ow * scale
@@ -626,49 +729,888 @@ def export_to_pdf(document, filepath):
             
             # Descrição do Passo
             description = step.description if step.description else "Nenhuma descrição fornecida."
-            # Substituir quebras de linha por tag <br/> para o ReportLab Paragraph
             formatted_description = description.replace('\n', '<br/>')
-            step_story.append(Paragraph(formatted_description, description_style))
             
-            # Agrupar elementos de cada passo para evitar quebras estranhas entre páginas
-            story.append(KeepTogether(step_story))
+            # Anexos do Passo
+            attachments = getattr(step, "attachments", [])
+            if attachments:
+                att_names = ", ".join([att["filename"] for att in attachments])
+                formatted_description += f"<br/><br/><b>📎 Arquivos Anexados:</b> {att_names}"
+                
+            step_story.append(Paragraph(formatted_description, description_style))
+            story_list.append(KeepTogether(step_story))
             
             if idx < len(document.steps) - 1:
-                story.append(Spacer(1, 20))
+                story_list.append(Spacer(1, 20))
                 
-        # Função de desenho do rodapé
-        def draw_footer(canvas, pdf_doc):
-            canvas.saveState()
-            
-            # Obter data atual formatada
-            from datetime import datetime
-            current_date = datetime.now().strftime("%d/%m/%Y %H:%M")
-            
-            # Fazer linha separadora acima do rodapé
-            canvas.setStrokeColor(colors.HexColor('#e2e8f0'))
-            canvas.setLineWidth(0.5)
-            canvas.line(40, 45, pdf_doc.pagesize[0] - 40, 45)
-            
-            # Configurar fonte do rodapé
-            canvas.setFont('Helvetica', 8)
-            canvas.setFillColor(colors.HexColor('#718096'))
-            
-            # Desenhar data e número de página
-            canvas.drawString(40, 30, f"Gerado em: {current_date}")
-            canvas.drawRightString(pdf_doc.pagesize[0] - 40, 30, f"Página {pdf_doc.page}")
-            
-            # Adicionar o logo do rodapé
-            try:
-                logo_path = utils.get_resource_path(os.path.join("img", "logo.png"))
-                if os.path.exists(logo_path):
-                    # A4 width = 595.27. Centro = 297.63. Logo width = 60, height = 15
-                    canvas.drawImage(logo_path, 267.63, 23, width=60, height=15, mask='auto')
-            except Exception as e:
-                print(f"Erro ao adicionar logo ao rodapé do PDF: {e}")
-                
-            canvas.restoreState()
+        return story_list
 
-        # Construir o PDF
-        doc.build(story, onFirstPage=draw_footer, onLaterPages=draw_footer)
+    # 3. Execução das duas passadas usando diretório temporário para as imagens
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Passada 1: Gravar em buffer temporário para descobrir as páginas
+        page_tracker = {}
+        # Iniciar dicionário com placeholders
+        for idx in range(len(document.steps)):
+            page_tracker[idx] = "--"
+            
+        temp_buffer = io.BytesIO()
+        doc_temp = SimpleDocTemplate(
+            temp_buffer,
+            pagesize=A4,
+            rightMargin=40,
+            leftMargin=40,
+            topMargin=40,
+            bottomMargin=60
+        )
+        story_temp = build_pdf_story(doc_temp, page_tracker, tmpdir)
+        doc_temp.build(story_temp, onFirstPage=draw_footer, onLaterPages=draw_footer)
+        
+        # Passada 2: Renderizar o PDF real com as páginas corretas detectadas
+        doc_final = SimpleDocTemplate(
+            filepath,
+            pagesize=A4,
+            rightMargin=40,
+            leftMargin=40,
+            topMargin=40,
+            bottomMargin=60
+        )
+        story_final = build_pdf_story(doc_final, page_tracker, tmpdir)
+        doc_final.build(story_final, onFirstPage=draw_footer, onLaterPages=draw_footer)
+        
+    return True
+
+
+def slugify(value):
+    import re
+    import unicodedata
+    value = unicodedata.normalize('NFKD', value).encode('ascii', 'ignore').decode('ascii')
+    value = re.sub(r'[^\w\s-]', '', value).strip().lower()
+    return re.sub(r'[-\s]+', '-', value)
+
+
+def export_to_wiki_repository(documents, output_dir):
+    """
+    Compila uma lista de objetos Document em um repositório Wiki estático organizado.
+    """
+    import shutil
+    import json
+    from datetime import datetime
+    
+    # 1. Criar estrutura de diretórios
+    docs_dir = os.path.join(output_dir, "docs")
+    img_dir = os.path.join(output_dir, "img")
+    att_dir = os.path.join(output_dir, "attachments")
+    css_dir = os.path.join(output_dir, "css")
+    js_dir = os.path.join(output_dir, "js")
+    
+    for d in [output_dir, docs_dir, img_dir, att_dir, css_dir, js_dir]:
+        os.makedirs(d, exist_ok=True)
+        
+    # 2. Copiar logos/ícones do sistema
+    logo_filename = ""
+    try:
+        logo_path = utils.get_resource_path(os.path.join("img", "logo.png"))
+        if os.path.exists(logo_path):
+            shutil.copy(logo_path, os.path.join(img_dir, "logo.png"))
+            logo_filename = "logo.png"
+    except Exception as e:
+        print(f"Erro ao copiar logo para Wiki: {e}")
+        
+    try:
+        icon_path = utils.get_resource_path(os.path.join("img", "icone.png"))
+        if os.path.exists(icon_path):
+            shutil.copy(icon_path, os.path.join(img_dir, "icone.png"))
+    except Exception as e:
+        print(f"Erro ao copiar icone para Wiki: {e}")
+        
+    # Processar cada documento
+    compiled_docs = []
+    
+    for doc_idx, doc in enumerate(documents):
+        raw_title = getattr(doc, "title", f"Documento_{doc_idx + 1}")
+        doc_slug = slugify(raw_title)
+        # Garantir slug única
+        if any(d["slug"] == doc_slug for d in compiled_docs):
+            doc_slug = f"{doc_slug}-{doc_idx}"
+            
+        doc_subtitle = getattr(doc, "subtitle", "")
+        category = getattr(doc, "category", "")
+        tags = getattr(doc, "tags", "")
+        author = getattr(doc, "author", "")
+        current_date = datetime.now().strftime("%d/%m/%Y %H:%M")
+        
+        # Mapear passos do documento
+        steps_data = []
+        for idx, step in enumerate(doc.steps):
+            step_title = step.title if step.title else f"Passo {idx + 1}"
+            step_desc = step.description if step.description else ""
+            
+            # Gerar imagem anotada
+            num_arrows = getattr(doc, "num_arrows", True)
+            ann_img = get_annotated_image(step, num_arrows)
+            img_filename = f"step_{doc_slug}_{idx}.png"
+            ann_img.save(os.path.join(img_dir, img_filename))
+            
+            # Exportar anexos
+            step_attachments = []
+            attachments = getattr(step, "attachments", [])
+            if attachments:
+                doc_att_dir = os.path.join(att_dir, doc_slug)
+                os.makedirs(doc_att_dir, exist_ok=True)
+                for att in attachments:
+                    att_filename = att["filename"]
+                    att_filepath = os.path.join(doc_att_dir, att_filename)
+                    with open(att_filepath, "wb") as f:
+                        f.write(att["data"])
+                    step_attachments.append({
+                        "filename": att_filename,
+                        "rel_path": f"attachments/{doc_slug}/{att_filename}"
+                    })
+                    
+            steps_data.append({
+                "title": step_title,
+                "description": step_desc,
+                "image": f"img/{img_filename}",
+                "attachments": step_attachments
+            })
+            
+        compiled_docs.append({
+            "slug": doc_slug,
+            "title": raw_title,
+            "subtitle": doc_subtitle,
+            "category": category,
+            "tags": [t.strip() for t in tags.split(",") if t.strip()] if tags else [],
+            "author": author,
+            "date": current_date,
+            "steps": steps_data
+        })
+        
+    # 3. Gerar arquivos estáticos
+    
+    # 3.1 style.css (sober, premium, Dark/Light Mode)
+    style_content = """/* Variables */
+:root {
+    --bg-primary: #f8fafc;
+    --bg-card: #ffffff;
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
+    --text-muted: #64748b;
+    --accent: #1a73e8;
+    --accent-hover: #1557b0;
+    --border: #e2e8f0;
+    --header-bg: #ffffff;
+    --sidebar-bg: #f8fafc;
+    --tag-bg: #f1f5f9;
+    --tag-text: #475569;
+    --shadow: 0 4px 6px -1px rgb(0 0 0 / 0.05), 0 2px 4px -2px rgb(0 0 0 / 0.05);
+    --font-stack: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+[data-theme="dark"] {
+    --bg-primary: #0f172a;
+    --bg-card: #1e293b;
+    --text-primary: #f8fafc;
+    --text-secondary: #cbd5e1;
+    --text-muted: #94a3b8;
+    --accent: #3b82f6;
+    --accent-hover: #60a5fa;
+    --border: #334155;
+    --header-bg: #1e293b;
+    --sidebar-bg: #1e293b;
+    --tag-bg: #334155;
+    --tag-text: #cbd5e1;
+    --shadow: 0 10px 15px -3px rgb(0 0 0 / 0.3);
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: var(--font-stack);
+    line-height: 1.6;
+    transition: background-color 0.3s, color 0.3s;
+}
+
+header {
+    background-color: var(--header-bg);
+    border-bottom: 1px solid var(--border);
+    padding: 1rem 2rem;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    box-shadow: var(--shadow);
+}
+
+.header-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.header-logo {
+    max-height: 32px;
+}
+
+.header-title {
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: var(--accent);
+    text-decoration: none;
+}
+
+.theme-toggle-btn {
+    background-color: var(--tag-bg);
+    color: var(--tag-text);
+    border: 1px solid var(--border);
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 0.875rem;
+    transition: background-color 0.2s, border-color 0.2s;
+}
+
+.theme-toggle-btn:hover {
+    background-color: var(--border);
+}
+
+.container {
+    max-width: 1200px;
+    margin: 2rem auto;
+    padding: 0 1.5rem;
+}
+
+/* Dashboard Style */
+.dashboard-hero {
+    margin-bottom: 2rem;
+    text-align: center;
+}
+
+.dashboard-hero h1 {
+    font-size: 2.5rem;
+    color: var(--accent);
+    margin-bottom: 8px;
+}
+
+.dashboard-hero p {
+    color: var(--text-secondary);
+}
+
+.search-filters-bar {
+    background-color: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem;
+    margin-bottom: 2rem;
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 15px;
+}
+
+.search-wrapper {
+    flex: 2;
+    min-width: 250px;
+    position: relative;
+}
+
+.search-input {
+    width: 100%;
+    padding: 10px 15px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: 0.95rem;
+    outline: none;
+}
+
+.search-input:focus {
+    border-color: var(--accent);
+}
+
+.filter-wrapper {
+    flex: 1;
+    min-width: 180px;
+}
+
+.filter-select {
+    width: 100%;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: 0.95rem;
+    outline: none;
+    cursor: pointer;
+}
+
+.docs-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 20px;
+}
+
+.doc-card {
+    background-color: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem;
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    transition: transform 0.2s, box-shadow 0.2s;
+    text-decoration: none;
+    color: inherit;
+}
+
+.doc-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 20px -5px rgb(0 0 0 / 0.1);
+    border-color: var(--accent);
+}
+
+.doc-card-header {
+    margin-bottom: 15px;
+}
+
+.doc-category {
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 4px;
+    display: block;
+}
+
+.doc-card-title {
+    font-size: 1.25rem;
+    font-weight: 700;
+    margin-bottom: 6px;
+}
+
+.doc-card-subtitle {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+}
+
+.doc-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 10px;
+}
+
+.doc-tag {
+    background-color: var(--tag-bg);
+    color: var(--tag-text);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 500;
+}
+
+.doc-card-footer {
+    border-top: 1px solid var(--border);
+    padding-top: 10px;
+    margin-top: 15px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+/* Wiki Page layout */
+.wiki-layout {
+    display: flex;
+    gap: 30px;
+    margin: 2rem auto;
+    max-width: 1200px;
+    padding: 0 1.5rem;
+}
+
+.wiki-sidebar {
+    width: 260px;
+    position: sticky;
+    top: 5rem;
+    height: calc(100vh - 7rem);
+    overflow-y: auto;
+    background-color: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem;
+    box-shadow: var(--shadow);
+}
+
+.wiki-sidebar-title {
+    font-size: 0.9rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 8px;
+}
+
+.wiki-sidebar-list {
+    list-style: none;
+}
+
+.wiki-sidebar-item {
+    margin-bottom: 6px;
+}
+
+.wiki-sidebar-link {
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: 0.925rem;
+    display: block;
+    padding: 6px 10px;
+    border-radius: 4px;
+    transition: background-color 0.15s, color 0.15s;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.wiki-sidebar-link:hover {
+    background-color: var(--tag-bg);
+    color: var(--accent);
+}
+
+.wiki-content {
+    flex: 1;
+    min-width: 0;
+}
+
+.wiki-doc-header {
+    background-color: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 2rem;
+    margin-bottom: 2rem;
+    box-shadow: var(--shadow);
+}
+
+.wiki-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 15px;
+    color: var(--text-muted);
+    font-size: 0.875rem;
+    margin-top: 15px;
+    border-top: 1px solid var(--border);
+    padding-top: 10px;
+}
+
+.step-card {
+    background-color: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 2rem;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+}
+
+.step-header {
+    background-color: var(--tag-bg);
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.step-number {
+    background-color: var(--accent);
+    color: #ffffff;
+    font-weight: 700;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.85rem;
+}
+
+.step-title {
+    font-size: 1.125rem;
+    font-weight: 700;
+}
+
+.step-body {
+    padding: 1.5rem;
+}
+
+.image-container {
+    text-align: center;
+    margin-bottom: 1.25rem;
+    background-color: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px;
+}
+
+.step-image {
+    max-width: 100%;
+    height: auto;
+    border-radius: 4px;
+}
+
+.step-description {
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    background-color: var(--bg-primary);
+    padding: 15px 20px;
+    border-radius: 6px;
+    border-left: 4px solid var(--accent);
+}
+
+.attachments-section {
+    margin-top: 1.25rem;
+    border-top: 1px solid var(--border);
+    padding-top: 12px;
+}
+
+.attachments-title {
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+    display: block;
+}
+
+.attachment-chip {
+    display: inline-flex;
+    align-items: center;
+    background-color: var(--tag-bg);
+    color: var(--tag-text);
+    padding: 4px 12px;
+    border-radius: 20px;
+    text-decoration: none;
+    font-size: 0.85rem;
+    font-weight: 600;
+    margin-right: 8px;
+    margin-bottom: 8px;
+    border: 1px solid var(--border);
+    transition: background-color 0.15s;
+}
+
+.attachment-chip:hover {
+    background-color: var(--border);
+    color: var(--accent);
+}
+
+/* Print Friendly Styles */
+@media print {
+    body {
+        background-color: #ffffff;
+        color: #000000;
+    }
+    header, .wiki-sidebar, .theme-toggle-btn, .attachments-section {
+        display: none !important;
+    }
+    .wiki-layout {
+        display: block;
+        margin: 0;
+        padding: 0;
+    }
+    .wiki-content {
+        width: 100%;
+    }
+    .step-card {
+        box-shadow: none;
+        border: 1px solid #000000;
+        page-break-inside: avoid;
+    }
+    .step-header {
+        background-color: #f1f5f9 !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+}
+"""
+    with open(os.path.join(css_dir, "style.css"), "w", encoding="utf-8") as f:
+        f.write(style_content)
+        
+    # 3.2 js/wiki.js
+    js_content = """document.addEventListener('DOMContentLoaded', () => {
+    // Theme toggle
+    const themeToggle = document.getElementById('theme-toggle');
+    const currentTheme = localStorage.getItem('theme') || 'light';
+    document.documentElement.setAttribute('data-theme', currentTheme);
+    if (themeToggle) {
+        themeToggle.textContent = currentTheme === 'dark' ? '☀️ Modo Claro' : '🌙 Modo Escuro';
+        themeToggle.addEventListener('click', () => {
+            const theme = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+            document.documentElement.setAttribute('data-theme', theme);
+            localStorage.setItem('theme', theme);
+            themeToggle.textContent = theme === 'dark' ? '☀️ Modo Claro' : '🌙 Modo Escuro';
+        });
+    }
+
+    // Search and Filters in Dashboard
+    const searchInput = document.getElementById('search-input');
+    const categoryFilter = document.getElementById('category-filter');
+    const authorFilter = document.getElementById('author-filter');
+    const cards = document.querySelectorAll('.doc-card');
+
+    function filterCards() {
+        const query = searchInput ? searchInput.value.toLowerCase().trim() : '';
+        const selectedCategory = categoryFilter ? categoryFilter.value : '';
+        const selectedAuthor = authorFilter ? authorFilter.value : '';
+
+        cards.forEach(card => {
+            const title = card.dataset.title.toLowerCase();
+            const subtitle = card.dataset.subtitle.toLowerCase();
+            const category = card.dataset.category;
+            const author = card.dataset.author;
+            const tags = card.dataset.tags.toLowerCase();
+            const stepsContent = card.dataset.stepsContent.toLowerCase();
+
+            const matchesQuery = query === '' || 
+                title.includes(query) || 
+                subtitle.includes(query) || 
+                tags.includes(query) || 
+                stepsContent.includes(query);
+
+            const matchesCategory = selectedCategory === '' || category === selectedCategory;
+            const matchesAuthor = selectedAuthor === '' || author === selectedAuthor;
+
+            if (matchesQuery && matchesCategory && matchesAuthor) {
+                card.style.display = 'flex';
+            } else {
+                card.style.display = 'none';
+            }
+        });
+    }
+
+    if (searchInput) searchInput.addEventListener('input', filterCards);
+    if (categoryFilter) categoryFilter.addEventListener('change', filterCards);
+    if (authorFilter) authorFilter.addEventListener('change', filterCards);
+});
+"""
+    with open(os.path.join(js_dir, "wiki.js"), "w", encoding="utf-8") as f:
+        f.write(js_content)
+        
+    # 3.3 index.html (Dashboard)
+    categories = sorted(list(set([d["category"] for d in compiled_docs if d["category"]])))
+    authors = sorted(list(set([d["author"] for d in compiled_docs if d["author"]])))
+    
+    cat_options = "\n".join([f'<option value="{c}">{c}</option>' for c in categories])
+    aut_options = "\n".join([f'<option value="{a}">{a}</option>' for a in authors])
+    
+    cards_html = []
+    for d in compiled_docs:
+        tags_html = "\n".join([f'<span class="doc-tag">{t}</span>' for t in d["tags"]])
+        steps_content = " ".join([s["title"] + " " + s["description"] for s in d["steps"]])
+        
+        # Obter número de anexos total
+        total_attachments = sum([len(s["attachments"]) for s in d["steps"]])
+        attachments_str = f" • 📎 {total_attachments} anexos" if total_attachments > 0 else ""
+        
+        cards_html.append(f"""
+        <a href="docs/{d["slug"]}.html" class="doc-card" 
+           data-title="{d["title"]}" 
+           data-subtitle="{d["subtitle"]}" 
+           data-category="{d["category"]}" 
+           data-author="{d["author"]}" 
+           data-tags="{",".join(d["tags"])}"
+           data-steps-content="{steps_content.replace('"', '&quot;')}">
+            <div class="doc-card-header">
+                <span class="doc-category">{d["category"] if d["category"] else "Geral"}</span>
+                <h2 class="doc-card-title">{d["title"]}</h2>
+                <p class="doc-card-subtitle">{d["subtitle"]}</p>
+                <div class="doc-tags">
+                    {tags_html}
+                </div>
+            </div>
+            <div class="doc-card-footer">
+                <span>👤 {d["author"] if d["author"] else "Sem autor"}</span>
+                <span>⏱️ {len(d["steps"])} passos{attachments_str}</span>
+            </div>
+        </a>
+        """)
+        
+    logo_tag = f'<img src="img/{logo_filename}" alt="Logo" class="header-logo">' if logo_filename else ''
+    
+    index_html = f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Repositório de Documentações</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="icon" type="image/png" href="img/icone.png">
+</head>
+<body>
+    <header>
+        <div class="header-left">
+            {logo_tag}
+            <span class="header-title">Wiki de Documentações</span>
+        </div>
+        <button id="theme-toggle" class="theme-toggle-btn">🌙 Modo Escuro</button>
+    </header>
+    
+    <main class="container">
+        <div class="dashboard-hero">
+            <h1>Acervo de Processos</h1>
+            <p>Consulte e explore todos os manuais e documentações ERP cadastrados.</p>
+        </div>
+        
+        <div class="search-filters-bar">
+            <div class="search-wrapper">
+                <input type="text" id="search-input" class="search-input" placeholder="Pesquisar por título, tags ou conteúdo dos passos...">
+            </div>
+            
+            <div class="filter-wrapper">
+                <select id="category-filter" class="filter-select">
+                    <option value="">Todas as Categorias</option>
+                    {cat_options}
+                </select>
+            </div>
+            
+            <div class="filter-wrapper">
+                <select id="author-filter" class="filter-select">
+                    <option value="">Todos os Autores</option>
+                    {aut_options}
+                </select>
+            </div>
+        </div>
+        
+        <div class="docs-grid">
+            {"".join(cards_html) if cards_html else "<p>Nenhuma documentação cadastrada.</p>"}
+        </div>
+    </main>
+    
+    <script src="js/wiki.js"></script>
+</body>
+</html>
+"""
+    with open(os.path.join(output_dir, "index.html"), "w", encoding="utf-8") as f:
+        f.write(index_html)
+        
+    # 3.4 docs/{slug}.html
+    for d in compiled_docs:
+        sidebar_items = []
+        for idx, s in enumerate(d["steps"]):
+            sidebar_items.append(f"""
+            <li class="wiki-sidebar-item">
+                <a href="#passo-{idx + 1}" class="wiki-sidebar-link" title="{s["title"]}">
+                    {idx + 1}. {s["title"]}
+                </a>
+            </li>
+            """)
+            
+        steps_cards = []
+        for idx, s in enumerate(d["steps"]):
+            att_chips = []
+            for att in s["attachments"]:
+                att_chips.append(f"""
+                <a href="../{att["rel_path"]}" download="{att["filename"]}" class="attachment-chip">
+                    <span>📎</span> {att["filename"]}
+                </a>
+                """)
+                
+            att_section = ""
+            if att_chips:
+                att_section = f"""
+                <div class="attachments-section">
+                    <span class="attachments-title">Arquivos Anexados:</span>
+                    <div style="display: flex; flex-wrap: wrap;">
+                        {"".join(att_chips)}
+                    </div>
+                </div>
+                """
+                
+            steps_cards.append(f"""
+            <div class="step-card" id="passo-{idx + 1}">
+                <div class="step-header">
+                    <div class="step-number">{idx + 1}</div>
+                    <h2 class="step-title">{s["title"]}</h2>
+                </div>
+                <div class="step-body">
+                    <div class="image-container">
+                        <img class="step-image" src="../{s["image"]}" alt="{s["title"]}" loading="lazy">
+                    </div>
+                    <p class="step-description">{s["description"]}</p>
+                    {att_section}
+                </div>
+            </div>
+            """)
+            
+        logo_tag_doc = f'<img src="../img/{logo_filename}" alt="Logo" class="header-logo">' if logo_filename else ''
+        
+        tags_doc_html = "\n".join([f'<span class="doc-tag">{t}</span>' for t in d["tags"]])
+        
+        meta_html_doc = []
+        if d["category"]:
+            meta_html_doc.append(f"<span>📁 Categoria: <b>{d["category"]}</b></span>")
+        if d["author"]:
+            meta_html_doc.append(f"<span>👤 Autor: <b>{d["author"]}</b></span>")
+        meta_html_doc.append(f"<span>⏱️ Publicado em: {d["date"]}</span>")
+        
+        doc_html_content = f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{d["title"]}</title>
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="icon" type="image/png" href="../img/icone.png">
+</head>
+<body>
+    <header>
+        <div class="header-left">
+            {logo_tag_doc}
+            <a href="../index.html" class="header-title" style="font-size: 0.95rem; text-decoration: underline;">← Voltar ao Portfólio</a>
+        </div>
+        <button id="theme-toggle" class="theme-toggle-btn">Modo Escuro</button>
+    </header>
+    
+    <div class="wiki-layout">
+        <aside class="wiki-sidebar">
+            <h3 class="wiki-sidebar-title">Índice do Manual</h3>
+            <ul class="wiki-sidebar-list">
+                {'\n'.join(sidebar_items)}
+            </ul>
+        </aside>
+        
+        <main class="wiki-content">
+            <div class="wiki-doc-header">
+                <h1>{d["title"]}</h1>
+                <p style="font-size: 1.1rem; color: var(--text-secondary); margin-top: 8px;">{d["subtitle"]}</p>
+                <div class="doc-tags" style="margin-top: 12px; margin-bottom: 5px;">
+                    {tags_doc_html}
+                </div>
+                <div class="wiki-meta">
+                    {'\n'.join(meta_html_doc)}
+                </div>
+            </div>
+            
+            <div class="steps-container">
+                {'\n'.join(steps_cards)}
+            </div>
+        </main>
+    </div>
+    
+    <script src="../js/wiki.js"></script>
+</body>
+</html>
+"""
+        with open(os.path.join(docs_dir, f"{d['slug']}.html"), "w", encoding="utf-8") as f:
+            f.write(doc_html_content)
         
     return True

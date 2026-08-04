@@ -5,12 +5,13 @@ import zipfile
 from PIL import Image
 
 class Step:
-    def __init__(self, id=None, title="", description="", image=None, annotations=None):
+    def __init__(self, id=None, title="", description="", image=None, annotations=None, attachments=None):
         self.id = id if id else uuid.uuid4().hex
         self.title = title
         self.description = description
         self.image = image  # PIL.Image object
         self.annotations = annotations if annotations is not None else []
+        self.attachments = attachments if attachments is not None else []
         
     def add_arrow(self, x1, y1, x2, y2, color="#FF0000", width=3):
         """
@@ -60,6 +61,9 @@ class Document:
         self.title = "Documentação de Processo ERP"
         self.subtitle = "Documento gerado automaticamente pelo Documentador de Processos"
         self.num_arrows = True
+        self.category = ""
+        self.tags = ""
+        self.author = ""
 
     def clear(self):
         self.steps = []
@@ -68,6 +72,9 @@ class Document:
         self.title = "Documentação de Processo ERP"
         self.subtitle = "Documento gerado automaticamente pelo Documentador de Processos"
         self.num_arrows = True
+        self.category = ""
+        self.tags = ""
+        self.author = ""
 
     def add_step(self, image: Image.Image, title="", description="") -> Step:
         # Garantir que a imagem está em RGB ou RGBA
@@ -108,6 +115,9 @@ class Document:
                 "title": self.title,
                 "subtitle": self.subtitle,
                 "num_arrows": self.num_arrows,
+                "category": getattr(self, "category", ""),
+                "tags": getattr(self, "tags", ""),
+                "author": getattr(self, "author", ""),
                 "steps": []
             }
             
@@ -120,13 +130,27 @@ class Document:
                 image_name = f"images/{step.id}.png"
                 zipf.writestr(image_name, img_data)
                 
+                # Salvar anexos do passo no zip
+                attachments_meta = []
+                for att in getattr(step, "attachments", []):
+                    att_filename = att["filename"]
+                    att_data = att["data"]
+                    zip_path = f"attachments/{step.id}/{att_filename}"
+                    zipf.writestr(zip_path, att_data)
+                    attachments_meta.append({
+                        "id": att["id"],
+                        "filename": att_filename,
+                        "zip_path": zip_path
+                    })
+                
                 # Adicionar dados do passo aos metadados
                 metadata["steps"].append({
                     "id": step.id,
                     "title": step.title,
                     "description": step.description,
                     "image_filename": image_name,
-                    "annotations": step.annotations
+                    "annotations": step.annotations,
+                    "attachments": attachments_meta
                 })
                 
             # Salvar o document.json no zip
@@ -150,6 +174,9 @@ class Document:
             self.title = metadata.get("title", "Documentação de Processo ERP")
             self.subtitle = metadata.get("subtitle", "Documento gerado automaticamente pelo Documentador de Processos")
             self.num_arrows = metadata.get("num_arrows", True)
+            self.category = metadata.get("category", "")
+            self.tags = metadata.get("tags", "")
+            self.author = metadata.get("author", "")
             
             for step_data in metadata["steps"]:
                 # Ler imagem correspondente
@@ -157,12 +184,30 @@ class Document:
                 image = Image.open(io.BytesIO(img_data))
                 image.load()  # Força o carregamento da imagem em memória
                 
+                # Ler anexos do passo
+                attachments = []
+                attachments_meta = step_data.get("attachments", [])
+                for att_meta in attachments_meta:
+                    att_id = att_meta["id"]
+                    att_filename = att_meta["filename"]
+                    zip_path = att_meta["zip_path"]
+                    try:
+                        att_data = zipf.read(zip_path)
+                        attachments.append({
+                            "id": att_id,
+                            "filename": att_filename,
+                            "data": att_data
+                        })
+                    except Exception as e:
+                        print(f"Erro ao ler anexo {att_filename}: {e}")
+                
                 step = Step(
                     id=step_data["id"],
                     title=step_data["title"],
                     description=step_data["description"],
                     image=image,
-                    annotations=step_data["annotations"]
+                    annotations=step_data["annotations"],
+                    attachments=attachments
                 )
                 self.steps.append(step)
                 

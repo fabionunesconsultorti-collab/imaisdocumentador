@@ -26,6 +26,19 @@ class TestDocumentadorLogic(unittest.TestCase):
         self.assertEqual(step.annotations[1]["type"], "text")
         
         # 3. Salvar documento em arquivo
+        self.doc.category = "TI"
+        self.doc.tags = "teste, doc"
+        self.doc.author = "Agente Antigravity"
+        
+        # Adicionar anexo ao passo
+        import uuid
+        att_data = b"dados de teste do anexo"
+        step.attachments.append({
+            "id": uuid.uuid4().hex,
+            "filename": "teste_anexo.txt",
+            "data": att_data
+        })
+        
         test_file = "test_document.docp"
         if os.path.exists(test_file):
             os.remove(test_file)
@@ -39,10 +52,19 @@ class TestDocumentadorLogic(unittest.TestCase):
         
         self.assertEqual(len(new_doc.steps), 1)
         self.assertEqual(new_doc.subtitle, "Subtítulo de Teste Específico")
+        self.assertEqual(new_doc.category, "TI")
+        self.assertEqual(new_doc.tags, "teste, doc")
+        self.assertEqual(new_doc.author, "Agente Antigravity")
+        
         loaded_step = new_doc.steps[0]
         self.assertEqual(loaded_step.title, "Passo Inicial")
         self.assertEqual(loaded_step.description, "Testando a criação de passos.")
         self.assertEqual(len(loaded_step.annotations), 2)
+        
+        # Validar anexo carregado
+        self.assertEqual(len(loaded_step.attachments), 1)
+        self.assertEqual(loaded_step.attachments[0]["filename"], "teste_anexo.txt")
+        self.assertEqual(loaded_step.attachments[0]["data"], att_data)
         
         # Validar coordenadas e atributos
         self.assertEqual(loaded_step.annotations[0]["x1"], 50)

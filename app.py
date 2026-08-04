@@ -8,7 +8,7 @@ from PIL import Image
 # Importações internas
 from document import Document, Step
 from editor_canvas import EditorCanvas
-from exporter import export_to_html, export_to_svg, export_to_pdf
+from exporter import export_to_html, export_to_svg, export_to_pdf, export_to_wiki_repository
 import utils
 
 # Configuração global do CustomTkinter
@@ -42,12 +42,15 @@ class DocumentadorApp(ctk.CTk):
         # Referências de imagens para thumbnails da lista lateral para evitar coleta de GC
         self.thumb_images = []
         
-        # Configurar Grid principal
-        self.grid_rowconfigure(1, weight=1)
+        # Configurar Grid principal (linha 0: top_bar, linha 1: doc_metadata_bar, linha 2: sidebar/workspace)
+        self.grid_rowconfigure(2, weight=1)
         self.grid_columnconfigure(1, weight=1)
         
         # 1. Barra de Menu Superior
         self.create_top_bar()
+        
+        # 1b. Barra de Metadados da Documentação (em linha)
+        self.create_doc_metadata_bar()
         
         # 2. Painel Lateral Esquerdo (Lista de Passos e Botões de Captura)
         self.create_left_sidebar()
@@ -75,28 +78,25 @@ class DocumentadorApp(ctk.CTk):
 
     def create_top_bar(self):
         # Frame do topo
-        self.top_bar = ctk.CTkFrame(self, height=50, corner_radius=0)
-        self.top_bar.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=0, pady=1)
+        self.top_bar = ctk.CTkFrame(self, height=45, corner_radius=0)
+        self.top_bar.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=0, pady=(0, 1))
         
         # Botões de Arquivo
         self.btn_new = ctk.CTkButton(self.top_bar, text="Novo Documento 📄", width=120, command=self.new_document, fg_color="#34495e", hover_color="#2c3e50")
-        self.btn_new.pack(side="left", padx=10, pady=10)
+        self.btn_new.pack(side="left", padx=10, pady=8)
         
         self.btn_open = ctk.CTkButton(self.top_bar, text="Abrir Arquivo 📂", width=120, command=self.open_document, fg_color="#34495e", hover_color="#2c3e50")
-        self.btn_open.pack(side="left", padx=5, pady=10)
+        self.btn_open.pack(side="left", padx=5, pady=8)
         
         self.btn_save = ctk.CTkButton(self.top_bar, text="Salvar Documento 💾", width=130, command=self.save_document, fg_color="#2ecc71", hover_color="#27ae60")
-        self.btn_save.pack(side="left", padx=5, pady=10)
+        self.btn_save.pack(side="left", padx=5, pady=8)
         
         # Botões de Exportação
-        self.btn_export_html = ctk.CTkButton(self.top_bar, text="Exportar HTML 🌐", width=120, command=self.export_html, fg_color="#e67e22", hover_color="#d35400")
-        self.btn_export_html.pack(side="left", padx=15, pady=10)
-        
-        self.btn_export_svg = ctk.CTkButton(self.top_bar, text="Exportar SVG 🎨", width=120, command=self.export_svg, fg_color="#e67e22", hover_color="#d35400")
-        self.btn_export_svg.pack(side="left", padx=5, pady=10)
+        self.btn_link_wiki = ctk.CTkButton(self.top_bar, text="Vincular à Wiki 📚", width=130, command=self.link_document_to_wiki, fg_color="#9b59b6", hover_color="#8e44ad")
+        self.btn_link_wiki.pack(side="left", padx=15, pady=8)
         
         self.btn_export_pdf = ctk.CTkButton(self.top_bar, text="Exportar PDF 📕", width=120, command=self.export_pdf, fg_color="#e67e22", hover_color="#d35400")
-        self.btn_export_pdf.pack(side="left", padx=5, pady=10)
+        self.btn_export_pdf.pack(side="left", padx=5, pady=8)
         
         # Indicador de Arquivo Atual
         self.lbl_filename = ctk.CTkLabel(self.top_bar, text="Sem título.docp", font=("Arial", 12, "italic"))
@@ -108,11 +108,56 @@ class DocumentadorApp(ctk.CTk):
             self.theme_switch.select()
         self.theme_switch.pack(side="right", padx=10)
 
+    def create_doc_metadata_bar(self):
+        # Barra em linha para Metadados da Documentação (row 1, abaixo dos comandos principais)
+        self.metadata_bar = ctk.CTkFrame(self, height=40, corner_radius=0)
+        self.metadata_bar.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=0, pady=(0, 2))
+        
+        # Título
+        lbl_doc_title = ctk.CTkLabel(self.metadata_bar, text="Título:", font=("Arial", 11, "bold"))
+        lbl_doc_title.pack(side="left", padx=(10, 2), pady=6)
+        self.doc_title_entry = ctk.CTkEntry(self.metadata_bar, height=26)
+        self.doc_title_entry.pack(side="left", fill="x", expand=True, padx=(0, 8), pady=6)
+        self.doc_title_entry.insert(0, self.document.title)
+        self.doc_title_entry.bind("<KeyRelease>", self.on_doc_title_changed)
+        
+        # Subtítulo
+        lbl_doc_subtitle = ctk.CTkLabel(self.metadata_bar, text="Subtítulo:", font=("Arial", 11, "bold"))
+        lbl_doc_subtitle.pack(side="left", padx=(4, 2), pady=6)
+        self.doc_subtitle_entry = ctk.CTkEntry(self.metadata_bar, height=26)
+        self.doc_subtitle_entry.pack(side="left", fill="x", expand=True, padx=(0, 8), pady=6)
+        self.doc_subtitle_entry.insert(0, self.document.subtitle)
+        self.doc_subtitle_entry.bind("<KeyRelease>", self.on_doc_subtitle_changed)
+
+        # Categoria
+        lbl_doc_category = ctk.CTkLabel(self.metadata_bar, text="Categoria:", font=("Arial", 11, "bold"))
+        lbl_doc_category.pack(side="left", padx=(4, 2), pady=6)
+        self.doc_category_entry = ctk.CTkEntry(self.metadata_bar, width=130, height=26)
+        self.doc_category_entry.pack(side="left", padx=(0, 8), pady=6)
+        self.doc_category_entry.insert(0, getattr(self.document, "category", ""))
+        self.doc_category_entry.bind("<KeyRelease>", self.on_doc_category_changed)
+
+        # Tags
+        lbl_doc_tags = ctk.CTkLabel(self.metadata_bar, text="Tags:", font=("Arial", 11, "bold"))
+        lbl_doc_tags.pack(side="left", padx=(4, 2), pady=6)
+        self.doc_tags_entry = ctk.CTkEntry(self.metadata_bar, width=130, height=26)
+        self.doc_tags_entry.pack(side="left", padx=(0, 8), pady=6)
+        self.doc_tags_entry.insert(0, getattr(self.document, "tags", ""))
+        self.doc_tags_entry.bind("<KeyRelease>", self.on_doc_tags_changed)
+
+        # Autor
+        lbl_doc_author = ctk.CTkLabel(self.metadata_bar, text="Autor:", font=("Arial", 11, "bold"))
+        lbl_doc_author.pack(anchor="w", side="left", padx=(4, 2), pady=6)
+        self.doc_author_entry = ctk.CTkEntry(self.metadata_bar, width=120, height=26)
+        self.doc_author_entry.pack(side="left", padx=(0, 10), pady=6)
+        self.doc_author_entry.insert(0, getattr(self.document, "author", ""))
+        self.doc_author_entry.bind("<KeyRelease>", self.on_doc_author_changed)
+
     def create_left_sidebar(self):
         # Frame lateral
         self.sidebar = ctk.CTkFrame(self, width=280, corner_radius=0)
-        self.sidebar.grid(row=1, column=0, sticky="nsew", padx=0, pady=0)
-        self.sidebar.grid_rowconfigure(3, weight=1)
+        self.sidebar.grid(row=2, column=0, sticky="nsew", padx=0, pady=0)
+        self.sidebar.grid_rowconfigure(2, weight=1)
         
         # Logo no painel lateral
         try:
@@ -129,38 +174,17 @@ class DocumentadorApp(ctk.CTk):
         except Exception as e:
             print(f"Erro ao carregar logo: {e}")
         
-        # Título da Documentação
-        doc_title_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        doc_title_frame.grid(row=1, column=0, padx=15, pady=(10, 5), sticky="ew")
-        
-        lbl_doc_title = ctk.CTkLabel(doc_title_frame, text="Título da Documentação:", font=("Arial", 12, "bold"))
-        lbl_doc_title.pack(anchor="w")
-        
-        self.doc_title_entry = ctk.CTkEntry(doc_title_frame, width=250)
-        self.doc_title_entry.pack(fill="x", pady=(2, 0))
-        self.doc_title_entry.insert(0, self.document.title)
-        self.doc_title_entry.bind("<KeyRelease>", self.on_doc_title_changed)
-        
-        # Subtítulo da Documentação
-        lbl_doc_subtitle = ctk.CTkLabel(doc_title_frame, text="Subtítulo da Documentação:", font=("Arial", 12, "bold"))
-        lbl_doc_subtitle.pack(anchor="w", pady=(10, 0))
-        
-        self.doc_subtitle_entry = ctk.CTkEntry(doc_title_frame, width=250)
-        self.doc_subtitle_entry.pack(fill="x", pady=(2, 0))
-        self.doc_subtitle_entry.insert(0, self.document.subtitle)
-        self.doc_subtitle_entry.bind("<KeyRelease>", self.on_doc_subtitle_changed)
-        
         # Título dos Passos
         lbl_sidebar = ctk.CTkLabel(self.sidebar, text="Passos do Processo", font=("Arial", 16, "bold"))
-        lbl_sidebar.grid(row=2, column=0, padx=15, pady=(10, 5), sticky="w")
+        lbl_sidebar.grid(row=1, column=0, padx=15, pady=(10, 5), sticky="w")
         
-        # Container rolável para a lista de passos
+        # Container rolável para a lista de passos (ocupa a maior área vertical da sidebar)
         self.scroll_steps = ctk.CTkScrollableFrame(self.sidebar, width=250, label_text="")
-        self.scroll_steps.grid(row=3, column=0, padx=10, pady=5, sticky="nsew")
+        self.scroll_steps.grid(row=2, column=0, padx=10, pady=5, sticky="nsew")
         
         # Frame inferior da sidebar com botões de Ações de Passos
         actions_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        actions_frame.grid(row=4, column=0, padx=10, pady=15, sticky="ew")
+        actions_frame.grid(row=3, column=0, padx=10, pady=15, sticky="ew")
         
         # Botões de captura rápida
         btn_paste = ctk.CTkButton(actions_frame, text="Colar Print (Clipboard) 📋", command=self.paste_image, fg_color="#1a73e8", hover_color="#1557b0")
@@ -193,7 +217,7 @@ class DocumentadorApp(ctk.CTk):
     def create_center_workspace(self):
         # Frame central do editor
         self.workspace = ctk.CTkFrame(self, fg_color="transparent")
-        self.workspace.grid(row=1, column=1, sticky="nsew", padx=10, pady=10)
+        self.workspace.grid(row=2, column=1, sticky="nsew", padx=10, pady=10)
         self.workspace.grid_rowconfigure(1, weight=1)
         self.workspace.grid_columnconfigure(0, weight=1)
         
@@ -277,27 +301,29 @@ class DocumentadorApp(ctk.CTk):
     def create_details_panel(self):
         self.details_panel = ctk.CTkFrame(self.workspace, height=180)
         self.details_panel.grid(row=2, column=0, sticky="ew", padx=5, pady=(5, 0))
-        self.details_panel.grid_rowconfigure(1, weight=1)
+        self.details_panel.grid_rowconfigure(2, weight=1)
         self.details_panel.grid_columnconfigure(0, weight=1)
         
         # Título do Passo
         title_frame = ctk.CTkFrame(self.details_panel, fg_color="transparent")
-        title_frame.grid(row=0, column=0, sticky="ew", padx=15, pady=(10, 5))
+        title_frame.grid(row=0, column=0, sticky="ew", padx=15, pady=(10, 2))
         
-        lbl_title = ctk.CTkLabel(title_frame, text="Título do Passo:", font=("Arial", 13, "bold"))
+        lbl_title = ctk.CTkLabel(title_frame, text="Título do Passo:", font=("Arial", 12, "bold"))
         lbl_title.pack(side="left", padx=(0, 10))
         
         self.title_entry = ctk.CTkEntry(title_frame)
         self.title_entry.pack(side="left", fill="x", expand=True)
         self.title_entry.bind("<KeyRelease>", self.sync_step_data)
         
-        # Descrição do Passo
-        lbl_desc = ctk.CTkLabel(self.details_panel, text="Explicação / Descrição do Passo:", font=("Arial", 13, "bold"))
-        lbl_desc.grid(row=1, column=0, sticky="w", padx=15, pady=(5, 0))
+        # Descrição do Passo (largura total)
+        lbl_desc = ctk.CTkLabel(self.details_panel, text="Explicação / Descrição do Passo:", font=("Arial", 12, "bold"))
+        lbl_desc.grid(row=1, column=0, sticky="w", padx=15, pady=(2, 0))
         
-        self.desc_textbox = ctk.CTkTextbox(self.details_panel, height=80)
+        self.desc_textbox = ctk.CTkTextbox(self.details_panel, height=75)
         self.desc_textbox.grid(row=2, column=0, sticky="nsew", padx=15, pady=(2, 10))
         self.desc_textbox.bind("<KeyRelease>", self.sync_step_data)
+        
+        self.selected_attachment_data = None
 
     # --- Controle de Fluxo de Passos e UI ---
 
@@ -359,6 +385,18 @@ class DocumentadorApp(ctk.CTk):
         self.document.subtitle = self.doc_subtitle_entry.get().strip()
         self.mark_as_changed()
 
+    def on_doc_category_changed(self, event=None):
+        self.document.category = self.doc_category_entry.get().strip()
+        self.mark_as_changed()
+
+    def on_doc_tags_changed(self, event=None):
+        self.document.tags = self.doc_tags_entry.get().strip()
+        self.mark_as_changed()
+
+    def on_doc_author_changed(self, event=None):
+        self.document.author = self.doc_author_entry.get().strip()
+        self.mark_as_changed()
+
     def toggle_num_arrows(self):
         enabled = self.num_arrows_var.get()
         self.document.num_arrows = enabled
@@ -409,6 +447,10 @@ class DocumentadorApp(ctk.CTk):
             # Habilitar painéis de edição
             self.title_entry.configure(state="normal")
             self.desc_textbox.configure(state="normal")
+            if hasattr(self, "btn_add_attachment") and self.btn_add_attachment:
+                self.btn_add_attachment.configure(state="normal")
+            if hasattr(self, "btn_remove_attachment") and self.btn_remove_attachment:
+                self.btn_remove_attachment.configure(state="normal")
             self.editor_canvas.grid()
             self.placeholder_label.grid_remove()
             self.btn_delete_element.configure(state="normal")
@@ -422,6 +464,10 @@ class DocumentadorApp(ctk.CTk):
             self.title_entry.configure(state="disabled")
             self.desc_textbox.delete("1.0", "end")
             self.desc_textbox.configure(state="disabled")
+            if hasattr(self, "btn_add_attachment") and self.btn_add_attachment:
+                self.btn_add_attachment.configure(state="disabled")
+            if hasattr(self, "btn_remove_attachment") and self.btn_remove_attachment:
+                self.btn_remove_attachment.configure(state="disabled")
             self.editor_canvas.grid_remove()
             self.placeholder_label.grid()
             self.btn_delete_element.configure(state="disabled")
@@ -435,6 +481,7 @@ class DocumentadorApp(ctk.CTk):
         if index is None or index < 0 or index >= len(self.document.steps):
             self.current_step_index = None
             self.editor_canvas.set_step(None)
+            self.update_attachments_list()
             self.update_ui_state()
             return
             
@@ -457,6 +504,7 @@ class DocumentadorApp(ctk.CTk):
         self.editor_canvas.set_tool("select")
         
         self.highlight_sidebar_button(index)
+        self.update_attachments_list()
         self.update_ui_state()
 
     def highlight_sidebar_button(self, selected_idx):
@@ -708,6 +756,12 @@ class DocumentadorApp(ctk.CTk):
             self.doc_title_entry.insert(0, self.document.title)
             self.doc_subtitle_entry.delete(0, "end")
             self.doc_subtitle_entry.insert(0, self.document.subtitle)
+            self.doc_category_entry.delete(0, "end")
+            self.doc_category_entry.insert(0, "")
+            self.doc_tags_entry.delete(0, "end")
+            self.doc_tags_entry.insert(0, "")
+            self.doc_author_entry.delete(0, "end")
+            self.doc_author_entry.insert(0, "")
             self.num_arrows_var.set(self.document.num_arrows)
             self.editor_canvas.set_num_arrows(self.document.num_arrows)
             self.rebuild_sidebar_list()
@@ -727,6 +781,12 @@ class DocumentadorApp(ctk.CTk):
                     self.doc_title_entry.insert(0, self.document.title)
                     self.doc_subtitle_entry.delete(0, "end")
                     self.doc_subtitle_entry.insert(0, self.document.subtitle)
+                    self.doc_category_entry.delete(0, "end")
+                    self.doc_category_entry.insert(0, getattr(self.document, "category", ""))
+                    self.doc_tags_entry.delete(0, "end")
+                    self.doc_tags_entry.insert(0, getattr(self.document, "tags", ""))
+                    self.doc_author_entry.delete(0, "end")
+                    self.doc_author_entry.insert(0, getattr(self.document, "author", ""))
                     self.num_arrows_var.set(self.document.num_arrows)
                     self.editor_canvas.set_num_arrows(self.document.num_arrows)
                     self.rebuild_sidebar_list()
@@ -777,40 +837,6 @@ class DocumentadorApp(ctk.CTk):
 
     # --- Operações de Exportação ---
 
-    def export_html(self):
-        if len(self.document.steps) == 0:
-            messagebox.showwarning("Exportação Vazia", "Adicione pelo menos um passo para poder exportar.")
-            return
-            
-        filepath = filedialog.asksaveasfilename(
-            title="Exportar para HTML",
-            defaultextension=".html",
-            filetypes=[("Página Web HTML", "*.html")]
-        )
-        if filepath:
-            try:
-                export_to_html(self.document, filepath)
-                messagebox.showinfo("Exportação Concluída", f"Documento exportado com sucesso para HTML em:\n{filepath}")
-            except Exception as e:
-                messagebox.showerror("Erro de Exportação", f"Erro exportando HTML:\n{e}")
-
-    def export_svg(self):
-        if len(self.document.steps) == 0:
-            messagebox.showwarning("Exportação Vazia", "Adicione pelo menos um passo para poder exportar.")
-            return
-            
-        filepath = filedialog.asksaveasfilename(
-            title="Exportar para SVG",
-            defaultextension=".svg",
-            filetypes=[("Imagem Vetorial SVG", "*.svg")]
-        )
-        if filepath:
-            try:
-                export_to_svg(self.document, filepath)
-                messagebox.showinfo("Exportação Concluída", f"Fluxo exportado com sucesso para SVG em:\n{filepath}")
-            except Exception as e:
-                messagebox.showerror("Erro de Exportação", f"Erro exportando SVG:\n{e}")
-
     def export_pdf(self):
         if len(self.document.steps) == 0:
             messagebox.showwarning("Exportação Vazia", "Adicione pelo menos um passo para poder exportar.")
@@ -830,6 +856,129 @@ class DocumentadorApp(ctk.CTk):
                     messagebox.showerror("Erro de Dependência", "Não foi possível carregar a biblioteca de geração de PDF (ReportLab).")
             except Exception as e:
                 messagebox.showerror("Erro de Exportação", f"Erro exportando PDF:\n{e}")
+
+    def link_document_to_wiki(self):
+        if len(self.document.steps) == 0:
+            messagebox.showwarning("Documento Vazio", "Adicione pelo menos um passo para poder vincular à base Wiki.")
+            return
+            
+        wiki_dir = filedialog.askdirectory(title="Selecionar diretório da Base Wiki")
+        if not wiki_dir:
+            return
+            
+        try:
+            # 1. Criar a pasta docp/ na base Wiki se não existir
+            docp_dir = os.path.join(wiki_dir, "docp")
+            os.makedirs(docp_dir, exist_ok=True)
+            
+            # 2. Determinar o slug do documento baseado no título
+            from exporter import slugify
+            doc_slug = slugify(self.document.title if self.document.title else "documento")
+            if not doc_slug:
+                doc_slug = "documento"
+                
+            # 3. Salvar o documento atual em docp/{doc_slug}.docp
+            target_filepath = os.path.join(docp_dir, f"{doc_slug}.docp")
+            self.document.save(target_filepath)
+            
+            # Atualizar o caminho local do documento ativo
+            self.document.filepath = target_filepath
+            self.update_title_bar()
+            
+            # 4. Escanear todos os arquivos .docp na pasta docp/
+            files = [os.path.join(docp_dir, f) for f in os.listdir(docp_dir) if f.endswith(".docp")]
+            
+            # 5. Carregar todos os documentos em memória
+            docs_to_compile = []
+            for f in files:
+                doc = Document()
+                doc.load(f)
+                docs_to_compile.append(doc)
+                
+            # 6. Compilar o repositório Wiki estático completo
+            export_to_wiki_repository(docs_to_compile, wiki_dir)
+            
+            messagebox.showinfo("Vinculação Concluída", f"Manual vinculado com sucesso!\nO repositório Wiki foi atualizado com {len(docs_to_compile)} manual(ais).")
+        except Exception as e:
+            messagebox.showerror("Erro de Vinculação", f"Erro ao vincular documento à Wiki:\n{e}")
+
+    def update_attachments_list(self):
+        if not hasattr(self, "attachments_listbox") or not self.attachments_listbox:
+            return
+            
+        for child in self.attachments_listbox.winfo_children():
+            child.destroy()
+            
+        if self.current_step_index is None:
+            if hasattr(self, "btn_add_attachment") and self.btn_add_attachment:
+                self.btn_add_attachment.configure(state="disabled")
+            if hasattr(self, "btn_remove_attachment") and self.btn_remove_attachment:
+                self.btn_remove_attachment.configure(state="disabled")
+            return
+            
+        if hasattr(self, "btn_add_attachment") and self.btn_add_attachment:
+            self.btn_add_attachment.configure(state="normal")
+        if hasattr(self, "btn_remove_attachment") and self.btn_remove_attachment:
+            self.btn_remove_attachment.configure(state="normal")
+        
+        step = self.document.steps[self.current_step_index]
+        attachments = getattr(step, "attachments", [])
+        
+        for att in attachments:
+            lbl = ctk.CTkLabel(self.attachments_listbox, text=att["filename"], font=("Arial", 11), anchor="w")
+            lbl.pack(fill="x", padx=5, pady=2)
+            lbl.bind("<Button-1>", lambda e, a=att, l=lbl: self.select_attachment(a, l))
+            
+        self.selected_attachment_data = None
+
+    def select_attachment(self, attachment, label_widget):
+        for child in self.attachments_listbox.winfo_children():
+            child.configure(fg_color="transparent", text_color=("gray10", "#DCE4EE"))
+        label_widget.configure(fg_color="#1a73e8", text_color="#ffffff")
+        self.selected_attachment_data = attachment
+
+    def add_step_attachment(self):
+        if self.current_step_index is None:
+            return
+        filepath = filedialog.askopenfilename(
+            title="Selecionar arquivo para anexar",
+            filetypes=[("Todos os arquivos", "*.*")]
+        )
+        if filepath:
+            try:
+                filename = os.path.basename(filepath)
+                with open(filepath, "rb") as f:
+                    file_data = f.read()
+                step = self.document.steps[self.current_step_index]
+                if not hasattr(step, "attachments"):
+                    step.attachments = []
+                if any(att["filename"] == filename for att in step.attachments):
+                    messagebox.showwarning("Arquivo Duplicado", f"O arquivo '{filename}' já está anexado a este passo.")
+                    return
+                import uuid
+                step.attachments.append({
+                    "id": uuid.uuid4().hex,
+                    "filename": filename,
+                    "data": file_data
+                })
+                self.mark_as_changed()
+                self.update_attachments_list()
+            except Exception as e:
+                messagebox.showerror("Erro ao Carregar Anexo", f"Erro: {e}")
+
+    def remove_step_attachment(self):
+        if self.current_step_index is None or not getattr(self, "selected_attachment_data", None):
+            messagebox.showwarning("Nenhum Anexo Selecionado", "Por favor, clique em um anexo da lista para selecioná-lo primeiro.")
+            return
+        step = self.document.steps[self.current_step_index]
+        att_id = self.selected_attachment_data["id"]
+        step.attachments = [a for a in getattr(step, "attachments", []) if a["id"] != att_id]
+        self.mark_as_changed()
+        self.selected_attachment_data = None
+        self.update_attachments_list()
+
+
+
 
 
 if __name__ == "__main__":
