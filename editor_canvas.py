@@ -108,11 +108,19 @@ class EditorCanvas(ctk.CTkFrame):
         self.canvas.pack(fill="both", expand=True)
         
         # Eventos do canvas
+         # Eventos do canvas
         self.canvas.bind("<Configure>", self.on_resize)
         self.canvas.bind("<ButtonPress-1>", self.on_click)
         self.canvas.bind("<B1-Motion>", self.on_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
         self.canvas.bind("<Double-Button-1>", self.on_double_click)
+        
+        # Histórico de alterações para desfazer (Ctrl+Z)
+        self.history = []
+        
+        # Binds globais de teclado para Desfazer (Ctrl+Z)
+        self.canvas.bind_all("<Control-z>", self.undo)
+        self.canvas.bind_all("<Command-z>", self.undo)  # macOS
         
         # Guardar referência de imagem do Tkinter para não ser coletada pelo GC
         self.tk_image = None
@@ -123,6 +131,7 @@ class EditorCanvas(ctk.CTkFrame):
         self.drag_start_pos = None
         self.temp_draw_id = None
         self.initial_anno_coords = None
+        self.history = [] # Limpar histórico ao mudar de passo
         self.redraw()
         
     def set_tool(self, tool):
@@ -148,6 +157,37 @@ class EditorCanvas(ctk.CTkFrame):
 
     def set_thickness(self, width):
         self.current_width = width
+        
+    def save_history(self):
+        """
+        Salva o estado atual das anotações no histórico para permitir o Desfazer (Ctrl+Z).
+        """
+        if self.step:
+            import copy
+            if len(self.history) >= 50:
+                self.history.pop(0)
+            self.history.append(copy.deepcopy(self.step.annotations))
+
+    def undo(self, event=None):
+        """
+        Desfaz a última alteração nas anotações do passo atual.
+        """
+        if event and event.widget:
+            # Se o foco estiver em um campo de texto, não interfere no Ctrl+Z nativo dele
+            try:
+                widget_class = event.widget.winfo_class()
+                if widget_class in ("Entry", "Text", "TEntry"):
+                    return
+            except Exception:
+                pass
+                
+        if self.step and self.history:
+            previous_annotations = self.history.pop()
+            self.step.annotations = previous_annotations
+            self.selected_anno_id = None
+            self.redraw()
+            self.notify_change()
+            return "break"
         if self.selected_anno_id and self.step:
             # Alterar espessura do elemento selecionado (se for seta)
             for anno in self.step.annotations:
@@ -329,6 +369,7 @@ class EditorCanvas(ctk.CTkFrame):
             
             self.selected_anno_id = found_id
             if found_id:
+                self.save_history() # Salvar histórico antes de arrastar
                 self.drag_start_pos = (event.x, event.y)
                 # Salvar coordenadas iniciais da anotação selecionada
                 self.initial_anno_coords = None
@@ -360,6 +401,7 @@ class EditorCanvas(ctk.CTkFrame):
             # Abrir diálogo para digitar texto
             dialog = TextDialog(self.winfo_toplevel(), title="Adicionar Texto", size=self.current_size)
             if dialog.result:
+                self.save_history() # Salvar histórico antes de adicionar texto
                 self.step.add_text(
                     ix, iy, 
                     dialog.result["text"], 
@@ -419,6 +461,7 @@ class EditorCanvas(ctk.CTkFrame):
                 ix1, iy1 = self.canvas_to_img_coords(x1, y1)
                 ix2, iy2 = self.canvas_to_img_coords(x2, y2)
                 
+                self.save_history() # Salvar histórico antes de desenhar seta
                 self.step.add_arrow(
                     ix1, iy1, ix2, iy2, 
                     color=self.current_color, 
@@ -441,6 +484,7 @@ class EditorCanvas(ctk.CTkFrame):
                     size=anno.get("size", 16)
                 )
                 if dialog.result:
+                    self.save_history() # Salvar histórico antes de alterar texto
                     anno["text"] = dialog.result["text"]
                     anno["size"] = dialog.result["size"]
                     self.redraw()
@@ -452,6 +496,7 @@ class EditorCanvas(ctk.CTkFrame):
         Exclui o elemento selecionado atualmente.
         """
         if self.step and self.selected_anno_id:
+            self.save_history() # Salvar histórico antes de remover
             self.step.remove_annotation(self.selected_anno_id)
             self.selected_anno_id = None
             self.redraw()

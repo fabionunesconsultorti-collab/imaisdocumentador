@@ -3,7 +3,43 @@ import sys
 import time
 import subprocess
 import io
+import json
+import urllib.request
 from PIL import Image, ImageGrab
+
+APP_VERSION = "1.1.0"
+GITHUB_REPO = "fabionunesconsultorti-collab/imaisdocumentador"
+
+
+def _parse_version(version: str) -> tuple:
+    parts = []
+    for chunk in version.split("."):
+        digits = "".join(c for c in chunk if c.isdigit())
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts)
+
+
+def check_for_updates(timeout: int = 8) -> dict:
+    """
+    Consulta a API do GitHub pela última release publicada do repositório.
+    Retorna um dict {"has_update", "current_version", "latest_version", "url"}.
+    Levanta exceção em caso de falha de rede/parsing (sem conexão, repo sem releases, etc.).
+    """
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+    req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        data = json.loads(response.read().decode("utf-8"))
+
+    latest_version = data.get("tag_name", "").lstrip("vV")
+    release_url = data.get("html_url", f"https://github.com/{GITHUB_REPO}/releases/latest")
+
+    return {
+        "has_update": _parse_version(latest_version) > _parse_version(APP_VERSION),
+        "current_version": APP_VERSION,
+        "latest_version": latest_version,
+        "url": release_url,
+    }
+
 
 def grab_clipboard_image() -> Image.Image | None:
     """

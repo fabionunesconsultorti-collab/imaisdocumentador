@@ -1,5 +1,6 @@
 import os
 import threading
+import webbrowser
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import customtkinter as ctk
@@ -107,6 +108,13 @@ class DocumentadorApp(ctk.CTk):
         if ctk.get_appearance_mode() == "Dark":
             self.theme_switch.select()
         self.theme_switch.pack(side="right", padx=10)
+
+        # Botão de verificação de atualizações (consulta releases no GitHub)
+        self.btn_check_update = ctk.CTkButton(
+            self.top_bar, text="Verificar Atualizações 🔄", width=170,
+            command=self.check_for_updates, fg_color="#34495e", hover_color="#2c3e50"
+        )
+        self.btn_check_update.pack(side="right", padx=10)
 
     def create_doc_metadata_bar(self):
         # Barra em linha para Metadados da Documentação (row 1, abaixo dos comandos principais)
@@ -299,9 +307,9 @@ class DocumentadorApp(ctk.CTk):
         self.color_menu.pack(side="left", padx=5)
 
     def create_details_panel(self):
-        self.details_panel = ctk.CTkFrame(self.workspace, height=180)
+        self.details_panel = ctk.CTkFrame(self.workspace, height=210)
         self.details_panel.grid(row=2, column=0, sticky="ew", padx=5, pady=(5, 0))
-        self.details_panel.grid_rowconfigure(2, weight=1)
+        self.details_panel.grid_rowconfigure(3, weight=1)
         self.details_panel.grid_columnconfigure(0, weight=1)
         
         # Título do Passo
@@ -319,11 +327,158 @@ class DocumentadorApp(ctk.CTk):
         lbl_desc = ctk.CTkLabel(self.details_panel, text="Explicação / Descrição do Passo:", font=("Arial", 12, "bold"))
         lbl_desc.grid(row=1, column=0, sticky="w", padx=15, pady=(2, 0))
         
-        self.desc_textbox = ctk.CTkTextbox(self.details_panel, height=75)
-        self.desc_textbox.grid(row=2, column=0, sticky="nsew", padx=15, pady=(2, 10))
+        # Barra de Ferramentas de Formatação (Negrito, Grifar e Adesivos)
+        self.formatting_toolbar = ctk.CTkFrame(self.details_panel, fg_color="transparent")
+        self.formatting_toolbar.grid(row=2, column=0, sticky="ew", padx=15, pady=(2, 2))
+        
+        btn_bold = ctk.CTkButton(self.formatting_toolbar, text="B", width=30, height=24, font=("Arial", 11, "bold"), fg_color="#34495e", hover_color="#2c3e50", command=lambda: self.insert_formatting_tag("**", "**"))
+        btn_bold.pack(side="left", padx=(0, 5))
+        
+        btn_highlight = ctk.CTkButton(self.formatting_toolbar, text="Grifar 🖍️", width=70, height=24, font=("Arial", 11), fg_color="#34495e", hover_color="#2c3e50", command=lambda: self.insert_formatting_tag("==", "=="))
+        btn_highlight.pack(side="left", padx=5)
+        
+        lbl_sep = ctk.CTkLabel(self.formatting_toolbar, text="|", text_color="#888888")
+        lbl_sep.pack(side="left", padx=10)
+        
+        btn_attention = ctk.CTkButton(self.formatting_toolbar, text="⚠️ Atenção", width=95, height=24, fg_color="#e74c3c", hover_color="#c0392b", font=("Arial", 11, "bold"), command=lambda: self.insert_formatting_tag("[atenção]", "[/atenção]"))
+        btn_attention.pack(side="left", padx=5)
+        
+        btn_observation = ctk.CTkButton(self.formatting_toolbar, text="ℹ️ Observação", width=115, height=24, fg_color="#3498db", hover_color="#2980b9", font=("Arial", 11, "bold"), command=lambda: self.insert_formatting_tag("[observação]", "[/observação]"))
+        btn_observation.pack(side="left", padx=5)
+        
+        btn_concept = ctk.CTkButton(self.formatting_toolbar, text="💡 Conceito", width=95, height=24, fg_color="#2ecc71", hover_color="#27ae60", font=("Arial", 11, "bold"), command=lambda: self.insert_formatting_tag("[conceito]", "[/conceito]"))
+        btn_concept.pack(side="left", padx=5)
+        
+        self.desc_textbox = ctk.CTkTextbox(self.details_panel, height=75, undo=True)
+        self.desc_textbox.grid(row=3, column=0, sticky="nsew", padx=15, pady=(2, 10))
         self.desc_textbox.bind("<KeyRelease>", self.sync_step_data)
         
         self.selected_attachment_data = None
+
+    def insert_formatting_tag(self, start_tag, end_tag):
+        """
+        Insere tags de formatação ao redor da seleção atual ou no cursor no desc_textbox.
+        """
+        if self.current_step_index is None:
+            return
+            
+        try:
+            # Tentar obter os índices de seleção
+            start_idx = self.desc_textbox._textbox.index("sel.first")
+            end_idx = self.desc_textbox._textbox.index("sel.last")
+            
+            selected_text = self.desc_textbox._textbox.get(start_idx, end_idx)
+            new_text = f"{start_tag}{selected_text}{end_tag}"
+            
+            self.desc_textbox._textbox.delete(start_idx, end_idx)
+            self.desc_textbox._textbox.insert(start_idx, new_text)
+            
+            self.desc_textbox._textbox.focus_set()
+        except tk.TclError:
+            # Se não houver seleção, insere no cursor
+            cursor_idx = self.desc_textbox._textbox.index("insert")
+            self.desc_textbox._textbox.insert(cursor_idx, f"{start_tag}{end_tag}")
+            
+            # Posicionar cursor entre as tags
+            offset = len(start_tag)
+            row, col = map(int, cursor_idx.split('.'))
+            new_cursor_idx = f"{row}.{col + offset}"
+            self.desc_textbox._textbox.mark_set("insert", new_cursor_idx)
+            self.desc_textbox._textbox.focus_set()
+            
+        self.sync_step_data()
+
+    def apply_formatting_tags(self, event=None):
+        """
+        Analisa o conteúdo do desc_textbox e aplica tags de formatação e adesivos visuais.
+        """
+        if self.current_step_index is None:
+            return
+            
+        import re
+        textbox = self.desc_textbox._textbox
+        
+        # 1. Configurar tags de estilo
+        if "bold" not in textbox.tag_names():
+            textbox.tag_configure("bold", font=("Arial", 12, "bold"))
+        if "highlight" not in textbox.tag_names():
+            textbox.tag_configure("highlight", background="#fef08a", foreground="#0f172a")
+            
+        if "flag_attention" not in textbox.tag_names():
+            textbox.tag_configure(
+                "flag_attention", 
+                background="#fdf2f2", 
+                foreground="#991b1b",
+                spacing1=6, 
+                spacing3=6, 
+                lmargin1=25, 
+                lmargin2=25, 
+                rmargin=25
+            )
+        if "flag_observation" not in textbox.tag_names():
+            textbox.tag_configure(
+                "flag_observation", 
+                background="#f0f9ff", 
+                foreground="#075985",
+                spacing1=6, 
+                spacing3=6, 
+                lmargin1=25, 
+                lmargin2=25, 
+                rmargin=25
+            )
+        if "flag_concept" not in textbox.tag_names():
+            textbox.tag_configure(
+                "flag_concept", 
+                background="#f0fdf4", 
+                foreground="#166534",
+                spacing1=6, 
+                spacing3=6, 
+                lmargin1=25, 
+                lmargin2=25, 
+                rmargin=25
+            )
+            
+        # 2. Remover tags antigas
+        for tag in ["bold", "highlight", "flag_attention", "flag_observation", "flag_concept"]:
+            textbox.tag_remove(tag, "1.0", "end")
+            
+        content = textbox.get("1.0", "end-1c")
+        
+        def get_tkinter_index(text, char_idx):
+            lines = text[:char_idx].split('\n')
+            return f"{len(lines)}.{len(lines[-1])}"
+            
+        # 3. Aplicar Negritos
+        for match in re.finditer(r"\*\*(.*?)\*\*", content, re.DOTALL):
+            start_tk = get_tkinter_index(content, match.start())
+            end_tk = get_tkinter_index(content, match.end())
+            textbox.tag_add("bold", start_tk, end_tk)
+            
+        # 4. Aplicar Destaques (Grifado)
+        for match in re.finditer(r"==(.*?)==", content, re.DOTALL):
+            start_tk = get_tkinter_index(content, match.start())
+            end_tk = get_tkinter_index(content, match.end())
+            textbox.tag_add("highlight", start_tk, end_tk)
+            
+        # 5. Aplicar Adesivo Atenção
+        for pattern in [r"\[atenção\](.*?)\[/atenção\]", r"\[atencao\](.*?)\[/atencao\]"]:
+            for match in re.finditer(pattern, content, re.DOTALL | re.IGNORECASE):
+                start_tk = get_tkinter_index(content, match.start())
+                end_tk = get_tkinter_index(content, match.end())
+                textbox.tag_add("flag_attention", start_tk, end_tk)
+                
+        # 6. Aplicar Adesivo Observação
+        for pattern in [r"\[observação\](.*?)\[/observação\]", r"\[observacao\](.*?)\[/observacao\]"]:
+            for match in re.finditer(pattern, content, re.DOTALL | re.IGNORECASE):
+                start_tk = get_tkinter_index(content, match.start())
+                end_tk = get_tkinter_index(content, match.end())
+                textbox.tag_add("flag_observation", start_tk, end_tk)
+                
+        # 7. Aplicar Adesivo Conceito
+        for match in re.finditer(r"\[conceito\](.*?)\[/conceito\]", content, re.DOTALL | re.IGNORECASE):
+            start_tk = get_tkinter_index(content, match.start())
+            end_tk = get_tkinter_index(content, match.end())
+            textbox.tag_add("flag_concept", start_tk, end_tk)
 
     # --- Controle de Fluxo de Passos e UI ---
 
@@ -339,6 +494,9 @@ class DocumentadorApp(ctk.CTk):
             
             # Sincronizar descrição
             step.description = self.desc_textbox.get("1.0", "end-1c").strip()
+            
+            # Aplicar realce de sintaxe em tempo real
+            self.apply_formatting_tags()
             
             # Atualizar legenda do botão na barra lateral sem redesenhar tudo
             self.refresh_step_button_text(self.current_step_index, step.title)
@@ -376,6 +534,43 @@ class DocumentadorApp(ctk.CTk):
             ctk.set_appearance_mode("Dark")
         else:
             ctk.set_appearance_mode("Light")
+
+    def check_for_updates(self):
+        self.btn_check_update.configure(state="disabled", text="Verificando... ⏳")
+
+        def worker():
+            try:
+                result = utils.check_for_updates()
+            except Exception as e:
+                result = {"error": str(e)}
+            self.after(0, lambda: self._on_update_check_done(result))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_update_check_done(self, result):
+        self.btn_check_update.configure(state="normal", text="Verificar Atualizações 🔄")
+
+        if "error" in result:
+            messagebox.showerror(
+                "Erro ao verificar atualização",
+                f"Não foi possível verificar atualizações no GitHub:\n{result['error']}"
+            )
+            return
+
+        if result["has_update"]:
+            abrir = messagebox.askyesno(
+                "Atualização disponível",
+                f"Uma nova versão está disponível: v{result['latest_version']} "
+                f"(versão atual: v{result['current_version']}).\n\n"
+                "Deseja abrir a página de download no GitHub?"
+            )
+            if abrir:
+                webbrowser.open(result["url"])
+        else:
+            messagebox.showinfo(
+                "Sem atualizações",
+                f"Você já está usando a versão mais recente (v{result['current_version']})."
+            )
 
     def on_doc_title_changed(self, event=None):
         self.document.title = self.doc_title_entry.get().strip()
@@ -496,6 +691,7 @@ class DocumentadorApp(ctk.CTk):
         self.desc_textbox.configure(state="normal")
         self.desc_textbox.delete("1.0", "end")
         self.desc_textbox.insert("1.0", step.description)
+        self.apply_formatting_tags()
         
         self.editor_canvas.set_step(step)
         

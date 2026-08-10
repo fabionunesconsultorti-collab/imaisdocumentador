@@ -155,6 +155,148 @@ def get_annotated_image(step, num_arrows=True) -> Image.Image:
     return img_copy
 
 
+def parse_description_to_html(description):
+    """
+    Analisa marcações na descrição e as converte em elementos HTML formatados e callouts.
+    """
+    if not description:
+        return ""
+        
+    import html
+    import re
+    
+    # 1. Escapar HTML para evitar XSS e quebra de layout
+    text = html.escape(description)
+    
+    # 2. Negritos: **texto** -> <strong>texto</strong>
+    text = re.sub(r"\*\*(.*?)\*\*", r"<strong>\1</strong>", text, flags=re.DOTALL)
+    
+    # 3. Grifados: ==texto== -> <mark>texto</mark>
+    text = re.sub(r"==(.*?)==", r'<mark style="background-color: #fef08a; padding: 2px 4px; border-radius: 4px; color: #0f172a; font-weight: 500;">\1</mark>', text, flags=re.DOTALL)
+    
+    # 4. Adesivos (Callouts)
+    # Emojis/SVG podem ser inline. Vamos usar SVGs inline elegantes de tamanho 20px
+    # Para Atenção
+    def replace_attention(match):
+        content = match.group(1).strip()
+        return f'<div class="flag-callout flag-attention">⚠️ <strong>[ATENÇÃO]</strong> {content}</div>'
+        
+    text = re.sub(r"\[atenção\](.*?)\[/atenção\]", replace_attention, text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"\[atencao\](.*?)\[/atencao\]", replace_attention, text, flags=re.DOTALL | re.IGNORECASE)
+    
+    # Para Observação
+    def replace_observation(match):
+        content = match.group(1).strip()
+        return f'<div class="flag-callout flag-observation">ℹ️ <strong>[OBSERVAÇÃO]</strong> {content}</div>'
+        
+    text = re.sub(r"\[observação\](.*?)\[/observação\]", replace_observation, text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"\[observacao\](.*?)\[/observacao\]", replace_observation, text, flags=re.DOTALL | re.IGNORECASE)
+    
+    # Para Conceito
+    def replace_concept(match):
+        content = match.group(1).strip()
+        return f'<div class="flag-callout flag-concept">💡 <strong>[CONCEITO]</strong> {content}</div>'
+        
+    text = re.sub(r"\[conceito\](.*?)\[/conceito\]", replace_concept, text, flags=re.DOTALL | re.IGNORECASE)
+    
+    # 5. Converter quebras de linha para <br/>
+    text = text.replace("\n", "<br/>")
+    return text
+
+
+def parse_description_to_pdf_flowables(description, description_style, available_width):
+    """
+    Analisa a descrição e retorna uma lista de Flowables (Paragraphs e Tables para os adesivos).
+    """
+    if not description:
+        return []
+        
+    import re
+    import html
+    from reportlab.platypus import Paragraph, Table, TableStyle
+    from reportlab.lib import colors
+    from reportlab.lib.styles import ParagraphStyle
+    
+    # 1. Separar o texto em blocos de texto comum e blocos de adesivos (flags)
+    pattern = r"(\[(?:atenção|atencao|observação|observacao|conceito)\].*?\[/(?:atenção|atencao|observação|observacao|conceito)\])"
+    parts = re.split(pattern, description, flags=re.DOTALL | re.IGNORECASE)
+    
+    flowables = []
+    
+    for part in parts:
+        if not part:
+            continue
+            
+        # Verificar se a parte é um adesivo
+        match_att = re.match(r"\[(?:atenção|atencao)\](.*?)\[/(?:atenção|atencao)\]", part, re.DOTALL | re.IGNORECASE)
+        match_obs = re.match(r"\[(?:observação|observacao)\](.*?)\[/(?:observação|observacao)\]", part, re.DOTALL | re.IGNORECASE)
+        match_con = re.match(r"\[conceito\](.*?)\[/conceito\]", part, re.DOTALL | re.IGNORECASE)
+        
+        if match_att or match_obs or match_con:
+            # Identificar o tipo do adesivo, cores e rótulo
+            if match_att:
+                tag_type = "ATENÇÃO"
+                content = match_att.group(1).strip()
+                bg_color = colors.HexColor("#fdf2f2")
+                border_color = colors.HexColor("#ef4444")
+                text_color = colors.HexColor("#991b1b")
+                emoji_char = "⚠️"
+            elif match_obs:
+                tag_type = "OBSERVAÇÃO"
+                content = match_obs.group(1).strip()
+                bg_color = colors.HexColor("#f0f9ff")
+                border_color = colors.HexColor("#0ea5e9")
+                text_color = colors.HexColor("#075985")
+                emoji_char = "ℹ️"
+            else:
+                tag_type = "CONCEITO"
+                content = match_con.group(1).strip()
+                bg_color = colors.HexColor("#f0fdf4")
+                border_color = colors.HexColor("#10b981")
+                text_color = colors.HexColor("#166534")
+                emoji_char = "💡"
+                
+            # Tratar formatação interna (negrito e grifado)
+            content_escaped = html.escape(content)
+            content_formatted = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", content_escaped, flags=re.DOTALL)
+            content_formatted = re.sub(r"==(.*?)==", r'<font backcolor="#fef08a">\1</font>', content_formatted, flags=re.DOTALL)
+            content_formatted = content_formatted.replace("\n", "<br/>")
+            
+            # Montar o parágrafo de texto simples do callout
+            callout_text = f"<b>{emoji_char} [{tag_type}]</b> {content_formatted}"
+            callout_style = ParagraphStyle(
+                'CalloutText',
+                parent=description_style,
+                textColor=text_color,
+                backColor=bg_color,
+                borderPadding=8,
+                spaceBefore=8,
+                spaceAfter=8
+            )
+            p = Paragraph(callout_text, callout_style)
+            
+            flowables.append(p)
+            flowables.append(Spacer(1, 10))
+        else:
+            # Texto comum
+            text_escaped = html.escape(part.strip())
+            if not text_escaped:
+                continue
+            text_formatted = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", text_escaped, flags=re.DOTALL)
+            text_formatted = re.sub(r"==(.*?)==", r'<font backcolor="#fef08a">\1</font>', text_formatted, flags=re.DOTALL)
+            text_formatted = text_formatted.replace("\n", "<br/>")
+            
+            p = Paragraph(text_formatted, description_style)
+            flowables.append(p)
+            flowables.append(Spacer(1, 10))
+            
+    # Remover o último Spacer desnecessário
+    if flowables and isinstance(flowables[-1], Spacer):
+        flowables.pop()
+        
+    return flowables
+
+
 def export_to_html(document, filepath):
     """
     Exporta o documento para um único arquivo HTML auto-contido com imagens base64.
@@ -258,6 +400,38 @@ def export_to_html(document, filepath):
             border-left: 4px solid #b2ccd6;
             margin: 0;
         }
+        .flag-callout {
+            display: flex;
+            align-items: flex-start;
+            padding: 12px 16px;
+            border-radius: 6px;
+            margin: 15px 0;
+            white-space: normal;
+            border-left: 4px solid;
+            font-size: 14px;
+        }
+        .flag-callout strong {
+            display: block;
+            margin-bottom: 4px;
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .flag-attention {
+            background-color: #fdf2f2;
+            border-left-color: #ef4444;
+            color: #991b1b;
+        }
+        .flag-observation {
+            background-color: #f0f9ff;
+            border-left-color: #0ea5e9;
+            color: #075985;
+        }
+        .flag-concept {
+            background-color: #f0fdf4;
+            border-left-color: #10b981;
+            color: #166534;
+        }
         footer {
             text-align: center;
             margin-top: 50px;
@@ -298,6 +472,7 @@ def export_to_html(document, filepath):
         
         step_title = step.title if step.title else f"Passo {idx + 1}"
         description = step.description if step.description else "Nenhuma descrição fornecida."
+        parsed_description = parse_description_to_html(description)
         
         # Anexos do passo
         attachments_html = ""
@@ -329,7 +504,7 @@ def export_to_html(document, filepath):
                 <div class="image-container">
                     <img class="step-image" src="data:image/png;base64,{img_str}" alt="{step_title}">
                 </div>
-                <p class="step-description">{description}</p>
+                <div class="step-description">{parsed_description}</div>
                 {attachments_html}
             </div>
         </div>
@@ -729,15 +904,15 @@ def export_to_pdf(document, filepath):
             
             # Descrição do Passo
             description = step.description if step.description else "Nenhuma descrição fornecida."
-            formatted_description = description.replace('\n', '<br/>')
             
             # Anexos do Passo
             attachments = getattr(step, "attachments", [])
             if attachments:
                 att_names = ", ".join([att["filename"] for att in attachments])
-                formatted_description += f"<br/><br/><b>📎 Arquivos Anexados:</b> {att_names}"
+                description += f"\n\n**📎 Arquivos Anexados:** {att_names}"
                 
-            step_story.append(Paragraph(formatted_description, description_style))
+            desc_flowables = parse_description_to_pdf_flowables(description, description_style, available_width)
+            step_story.extend(desc_flowables)
             story_list.append(KeepTogether(step_story))
             
             if idx < len(document.steps) - 1:
@@ -1277,6 +1452,38 @@ header {
     border-radius: 6px;
     border-left: 4px solid var(--accent);
 }
+.flag-callout {
+    display: flex;
+    align-items: flex-start;
+    padding: 12px 16px;
+    border-radius: 6px;
+    margin: 15px 0;
+    white-space: normal;
+    border-left: 4px solid;
+    font-size: 14px;
+}
+.flag-callout strong {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.flag-attention {
+    background-color: #fdf2f2;
+    border-left-color: #ef4444;
+    color: #991b1b;
+}
+.flag-observation {
+    background-color: #f0f9ff;
+    border-left-color: #0ea5e9;
+    color: #075985;
+}
+.flag-concept {
+    background-color: #f0fdf4;
+    border-left-color: #10b981;
+    color: #166534;
+}
 
 .attachments-section {
     margin-top: 1.25rem;
@@ -1516,6 +1723,7 @@ header {
             
         steps_cards = []
         for idx, s in enumerate(d["steps"]):
+            parsed_description = parse_description_to_html(s["description"])
             att_chips = []
             for att in s["attachments"]:
                 att_chips.append(f"""
@@ -1545,7 +1753,7 @@ header {
                     <div class="image-container">
                         <img class="step-image" src="../{s["image"]}" alt="{s["title"]}" loading="lazy">
                     </div>
-                    <p class="step-description">{s["description"]}</p>
+                    <div class="step-description">{parsed_description}</div>
                     {att_section}
                 </div>
             </div>

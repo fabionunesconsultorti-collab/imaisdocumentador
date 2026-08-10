@@ -2,7 +2,14 @@ import os
 import unittest
 from PIL import Image
 from document import Document, Step
-from exporter import export_to_html, export_to_svg, export_to_pdf, get_annotated_image
+from exporter import (
+    export_to_html, 
+    export_to_svg, 
+    export_to_pdf, 
+    get_annotated_image,
+    parse_description_to_html,
+    parse_description_to_pdf_flowables
+)
 
 class TestDocumentadorLogic(unittest.TestCase):
     def setUp(self):
@@ -84,7 +91,11 @@ class TestDocumentadorLogic(unittest.TestCase):
 
     def test_exporters(self):
         # Preparar documento com 2 passos
-        step1 = self.doc.add_step(self.test_image, title="Passo 1", description="Descrição do primeiro passo.")
+        step1 = self.doc.add_step(
+            self.test_image, 
+            title="Passo 1", 
+            description="Descrição do primeiro passo com **negrito** e ==grifado==.\n[atenção]Aviso importante![/atenção]\n[observação]Nota informativa.[/observação]"
+        )
         step1.add_arrow(100, 100, 300, 200, color="#FF0000", width=3)
         
         step2 = self.doc.add_step(self.test_image, title="Passo 2", description="Descrição do segundo passo.")
@@ -124,5 +135,23 @@ class TestDocumentadorLogic(unittest.TestCase):
             if os.path.exists(f):
                 os.remove(f)
 
+    def test_formatting_and_flags_parsing(self):
+        # Testar parsing de HTML
+        html_desc = parse_description_to_html("Isso é **negrito** e ==grifado==. [atenção]Perigo![/atenção]")
+        self.assertIn("<strong>negrito</strong>", html_desc)
+        self.assertIn("flag-callout flag-attention", html_desc)
+        self.assertIn("Perigo!", html_desc)
+        
+        # Testar parsing de PDF
+        from reportlab.lib.styles import getSampleStyleSheet
+        styles = getSampleStyleSheet()
+        pdf_flowables = parse_description_to_pdf_flowables(
+            "Texto normal. [observação]Info.[/observação]",
+            styles['Normal'],
+            available_width=500
+        )
+        # Deve gerar pelo menos dois flowables (o texto normal e a tabela do callout)
+        self.assertGreaterEqual(len(pdf_flowables), 2)
+ 
 if __name__ == "__main__":
     unittest.main()
