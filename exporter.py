@@ -155,26 +155,91 @@ def get_annotated_image(step, num_arrows=True) -> Image.Image:
     return img_copy
 
 
+# Marcações de lista aceitas na descrição dos passos
+BULLET_LINE_RE = r"^\s*[-*]\s+(.*)$"
+NUMBERED_LINE_RE = r"^\s*\d+[.)]\s+(.*)$"
+
+# O itálico usa _texto_, exigindo que os underscores não estejam colados a
+# outras palavras para não quebrar identificadores como nome_do_campo.
+ITALIC_RE = r"(?<![\w_])_([^_\n]+?)_(?![\w_])"
+
+
+def _wrap_html_lists(text):
+    """
+    Agrupa linhas iniciadas por "- " ou "1. " em listas <ul>/<ol> e converte as
+    quebras de linha restantes em <br/>.
+    """
+    import re
+
+    bullet_re = re.compile(BULLET_LINE_RE)
+    numbered_re = re.compile(NUMBERED_LINE_RE)
+
+    blocks = []
+    items = []
+    list_tag = None
+
+    def flush_list():
+        nonlocal items, list_tag
+        if items:
+            blocks.append(f"<{list_tag}>" + "".join(f"<li>{item}</li>" for item in items) + f"</{list_tag}>")
+            items = []
+            list_tag = None
+
+    for line in text.split("\n"):
+        bullet = bullet_re.match(line)
+        numbered = numbered_re.match(line) if not bullet else None
+
+        if bullet or numbered:
+            tag = "ul" if bullet else "ol"
+            if list_tag != tag:
+                flush_list()
+                list_tag = tag
+            items.append((bullet or numbered).group(1))
+        else:
+            flush_list()
+            blocks.append(line)
+
+    flush_list()
+
+    joined = "<br/>".join(blocks)
+
+    # Listas já são blocos: remover as quebras redundantes ao redor delas
+    joined = re.sub(r"<br/>(?=<(?:ul|ol)>)", "", joined)
+    joined = re.sub(r"(?<=</ul>)<br/>", "", joined)
+    joined = re.sub(r"(?<=</ol>)<br/>", "", joined)
+
+    return joined
+
+
 def parse_description_to_html(description):
     """
     Analisa marcações na descrição e as converte em elementos HTML formatados e callouts.
     """
     if not description:
         return ""
-        
+
     import html
     import re
-    
+
     # 1. Escapar HTML para evitar XSS e quebra de layout
     text = html.escape(description)
-    
+
     # 2. Negritos: **texto** -> <strong>texto</strong>
     text = re.sub(r"\*\*(.*?)\*\*", r"<strong>\1</strong>", text, flags=re.DOTALL)
-    
-    # 3. Grifados: ==texto== -> <mark>texto</mark>
+
+    # 3. Itálicos: _texto_ -> <em>texto</em>
+    text = re.sub(ITALIC_RE, r"<em>\1</em>", text)
+
+    # 4. Sublinhados: ++texto++ -> <u>texto</u>
+    text = re.sub(r"\+\+(.*?)\+\+", r"<u>\1</u>", text, flags=re.DOTALL)
+
+    # 5. Grifados: ==texto== -> <mark>texto</mark>
     text = re.sub(r"==(.*?)==", r'<mark style="background-color: #fef08a; padding: 2px 4px; border-radius: 4px; color: #0f172a; font-weight: 500;">\1</mark>', text, flags=re.DOTALL)
-    
-    # 4. Adesivos (Callouts)
+
+    # 6. Listas com marcadores e numeradas (também resolve as quebras de linha)
+    text = _wrap_html_lists(text)
+
+    # 7. Adesivos (Callouts)
     # Emojis/SVG podem ser inline. Vamos usar SVGs inline elegantes de tamanho 20px
     # Para Atenção
     def replace_attention(match):
@@ -198,10 +263,86 @@ def parse_description_to_html(description):
         return f'<div class="flag-callout flag-concept">💡 <strong>[CONCEITO]</strong> {content}</div>'
         
     text = re.sub(r"\[conceito\](.*?)\[/conceito\]", replace_concept, text, flags=re.DOTALL | re.IGNORECASE)
-    
-    # 5. Converter quebras de linha para <br/>
-    text = text.replace("\n", "<br/>")
+
     return text
+
+
+def _format_inline_for_pdf(text):
+    """
+    Converte as marcações inline (negrito, itálico, sublinhado e grifado) para as
+    tags suportadas pelo Paragraph do ReportLab.
+    """
+    import re
+    import html
+
+    formatted = html.escape(text)
+    formatted = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", formatted, flags=re.DOTALL)
+    formatted = re.sub(ITALIC_RE, r"<i>\1</i>", formatted)
+    formatted = re.sub(r"\+\+(.*?)\+\+", r"<u>\1</u>", formatted, flags=re.DOTALL)
+    formatted = re.sub(r"==(.*?)==", r'<font backcolor="#fef08a">\1</font>', formatted, flags=re.DOTALL)
+    return formatted
+
+
+def _plain_text_to_pdf_flowables(text, description_style):
+    """
+    Converte um bloco de texto comum em Paragraphs, transformando as linhas de
+    lista ("- item" / "1. item") em itens indentados.
+    """
+    import re
+    from reportlab.platypus import Paragraph
+    from reportlab.lib.styles import ParagraphStyle
+
+    if not text:
+        return []
+
+    bullet_re = re.compile(BULLET_LINE_RE)
+    numbered_re = re.compile(NUMBERED_LINE_RE)
+
+    list_style = ParagraphStyle(
+        'DescriptionListItem',
+        parent=description_style,
+        leftIndent=18,
+        spaceBefore=1,
+        spaceAfter=1
+    )
+
+    flowables = []
+    paragraph_lines = []
+    item_number = 0
+
+    def flush_paragraph():
+        nonlocal paragraph_lines
+        if paragraph_lines:
+            joined = "<br/>".join(_format_inline_for_pdf(line) for line in paragraph_lines)
+            flowables.append(Paragraph(joined, description_style))
+            flowables.append(Spacer(1, 10))
+            paragraph_lines = []
+
+    for line in text.split("\n"):
+        bullet = bullet_re.match(line)
+        numbered = numbered_re.match(line) if not bullet else None
+
+        if bullet or numbered:
+            flush_paragraph()
+            if numbered:
+                item_number += 1
+                marker = f"{item_number}."
+            else:
+                item_number = 0
+                marker = "•"
+            content = _format_inline_for_pdf((bullet or numbered).group(1))
+            flowables.append(Paragraph(f"{marker} {content}", list_style))
+        else:
+            item_number = 0
+            if line.strip() or paragraph_lines:
+                paragraph_lines.append(line)
+
+    flush_paragraph()
+
+    if flowables and not isinstance(flowables[-1], Spacer):
+        flowables.append(Spacer(1, 10))
+
+    return flowables
 
 
 def parse_description_to_pdf_flowables(description, description_style, available_width):
@@ -210,13 +351,12 @@ def parse_description_to_pdf_flowables(description, description_style, available
     """
     if not description:
         return []
-        
+
     import re
-    import html
-    from reportlab.platypus import Paragraph, Table, TableStyle
+    from reportlab.platypus import Paragraph
     from reportlab.lib import colors
     from reportlab.lib.styles import ParagraphStyle
-    
+
     # 1. Separar o texto em blocos de texto comum e blocos de adesivos (flags)
     pattern = r"(\[(?:atenção|atencao|observação|observacao|conceito)\].*?\[/(?:atenção|atencao|observação|observacao|conceito)\])"
     parts = re.split(pattern, description, flags=re.DOTALL | re.IGNORECASE)
@@ -256,11 +396,8 @@ def parse_description_to_pdf_flowables(description, description_style, available
                 text_color = colors.HexColor("#166534")
                 emoji_char = "💡"
                 
-            # Tratar formatação interna (negrito e grifado)
-            content_escaped = html.escape(content)
-            content_formatted = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", content_escaped, flags=re.DOTALL)
-            content_formatted = re.sub(r"==(.*?)==", r'<font backcolor="#fef08a">\1</font>', content_formatted, flags=re.DOTALL)
-            content_formatted = content_formatted.replace("\n", "<br/>")
+            # Tratar formatação interna (negrito, itálico, sublinhado e grifado)
+            content_formatted = _format_inline_for_pdf(content).replace("\n", "<br/>")
             
             # Montar o parágrafo de texto simples do callout
             callout_text = f"<b>{emoji_char} [{tag_type}]</b> {content_formatted}"
@@ -278,17 +415,8 @@ def parse_description_to_pdf_flowables(description, description_style, available
             flowables.append(p)
             flowables.append(Spacer(1, 10))
         else:
-            # Texto comum
-            text_escaped = html.escape(part.strip())
-            if not text_escaped:
-                continue
-            text_formatted = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", text_escaped, flags=re.DOTALL)
-            text_formatted = re.sub(r"==(.*?)==", r'<font backcolor="#fef08a">\1</font>', text_formatted, flags=re.DOTALL)
-            text_formatted = text_formatted.replace("\n", "<br/>")
-            
-            p = Paragraph(text_formatted, description_style)
-            flowables.append(p)
-            flowables.append(Spacer(1, 10))
+            # Texto comum (com suporte a listas com marcadores e numeradas)
+            flowables.extend(_plain_text_to_pdf_flowables(part.strip(), description_style))
             
     # Remover o último Spacer desnecessário
     if flowables and isinstance(flowables[-1], Spacer):
@@ -399,6 +527,15 @@ def export_to_html(document, filepath):
             border-radius: 8px;
             border-left: 4px solid #b2ccd6;
             margin: 0;
+        }
+        .step-description ul,
+        .step-description ol {
+            margin: 10px 0;
+            padding-left: 28px;
+            white-space: normal;
+        }
+        .step-description li {
+            margin-bottom: 6px;
         }
         .flag-callout {
             display: flex;
@@ -1451,6 +1588,15 @@ header {
     padding: 15px 20px;
     border-radius: 6px;
     border-left: 4px solid var(--accent);
+}
+.step-description ul,
+.step-description ol {
+    margin: 10px 0;
+    padding-left: 28px;
+    white-space: normal;
+}
+.step-description li {
+    margin-bottom: 6px;
 }
 .flag-callout {
     display: flex;

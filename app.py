@@ -1,4 +1,5 @@
 import os
+import re
 import threading
 import webbrowser
 import tkinter as tk
@@ -9,7 +10,15 @@ from PIL import Image
 # Importações internas
 from document import Document, Step
 from editor_canvas import EditorCanvas
-from exporter import export_to_html, export_to_svg, export_to_pdf, export_to_wiki_repository
+from exporter import (
+    export_to_html,
+    export_to_svg,
+    export_to_pdf,
+    export_to_wiki_repository,
+    BULLET_LINE_RE,
+    NUMBERED_LINE_RE,
+    ITALIC_RE,
+)
 import utils
 
 # Configuração global do CustomTkinter
@@ -18,6 +27,12 @@ ctk.set_default_color_theme("blue")  # Tema de cores azul padrão (muito elegant
 
 
 class DocumentadorApp(ctk.CTk):
+    # Alturas do painel de descrição nos modos normal e expandido
+    DESC_PANEL_HEIGHT_NORMAL = 300
+    DESC_PANEL_HEIGHT_EXPANDED = 520
+    DESC_TEXTBOX_HEIGHT_NORMAL = 150
+    DESC_TEXTBOX_HEIGHT_EXPANDED = 370
+
     def __init__(self):
         super().__init__()
         
@@ -307,53 +322,101 @@ class DocumentadorApp(ctk.CTk):
         self.color_menu.pack(side="left", padx=5)
 
     def create_details_panel(self):
-        self.details_panel = ctk.CTkFrame(self.workspace, height=210)
+        self.details_panel = ctk.CTkFrame(self.workspace, height=self.DESC_PANEL_HEIGHT_NORMAL)
         self.details_panel.grid(row=2, column=0, sticky="ew", padx=5, pady=(5, 0))
         self.details_panel.grid_rowconfigure(3, weight=1)
         self.details_panel.grid_columnconfigure(0, weight=1)
-        
+
         # Título do Passo
         title_frame = ctk.CTkFrame(self.details_panel, fg_color="transparent")
         title_frame.grid(row=0, column=0, sticky="ew", padx=15, pady=(10, 2))
-        
+
         lbl_title = ctk.CTkLabel(title_frame, text="Título do Passo:", font=("Arial", 12, "bold"))
         lbl_title.pack(side="left", padx=(0, 10))
-        
+
         self.title_entry = ctk.CTkEntry(title_frame)
         self.title_entry.pack(side="left", fill="x", expand=True)
         self.title_entry.bind("<KeyRelease>", self.sync_step_data)
-        
-        # Descrição do Passo (largura total)
-        lbl_desc = ctk.CTkLabel(self.details_panel, text="Explicação / Descrição do Passo:", font=("Arial", 12, "bold"))
-        lbl_desc.grid(row=1, column=0, sticky="w", padx=15, pady=(2, 0))
-        
-        # Barra de Ferramentas de Formatação (Negrito, Grifar e Adesivos)
+
+        # Cabeçalho da Descrição com botão de expandir a área de digitação
+        desc_header = ctk.CTkFrame(self.details_panel, fg_color="transparent")
+        desc_header.grid(row=1, column=0, sticky="ew", padx=15, pady=(2, 0))
+
+        lbl_desc = ctk.CTkLabel(desc_header, text="Explicação / Descrição do Passo:", font=("Arial", 12, "bold"))
+        lbl_desc.pack(side="left")
+
+        self.btn_expand_desc = ctk.CTkButton(
+            desc_header, text="Expandir ⤢", width=100, height=24, font=("Arial", 11),
+            fg_color="#34495e", hover_color="#2c3e50", command=self.toggle_description_size
+        )
+        self.btn_expand_desc.pack(side="right")
+
+        # Barra de Ferramentas de Formatação (WYSIWYG)
         self.formatting_toolbar = ctk.CTkFrame(self.details_panel, fg_color="transparent")
-        self.formatting_toolbar.grid(row=2, column=0, sticky="ew", padx=15, pady=(2, 2))
-        
-        btn_bold = ctk.CTkButton(self.formatting_toolbar, text="B", width=30, height=24, font=("Arial", 11, "bold"), fg_color="#34495e", hover_color="#2c3e50", command=lambda: self.insert_formatting_tag("**", "**"))
-        btn_bold.pack(side="left", padx=(0, 5))
-        
-        btn_highlight = ctk.CTkButton(self.formatting_toolbar, text="Grifar 🖍️", width=70, height=24, font=("Arial", 11), fg_color="#34495e", hover_color="#2c3e50", command=lambda: self.insert_formatting_tag("==", "=="))
-        btn_highlight.pack(side="left", padx=5)
-        
-        lbl_sep = ctk.CTkLabel(self.formatting_toolbar, text="|", text_color="#888888")
-        lbl_sep.pack(side="left", padx=10)
-        
-        btn_attention = ctk.CTkButton(self.formatting_toolbar, text="⚠️ Atenção", width=95, height=24, fg_color="#e74c3c", hover_color="#c0392b", font=("Arial", 11, "bold"), command=lambda: self.insert_formatting_tag("[atenção]", "[/atenção]"))
-        btn_attention.pack(side="left", padx=5)
-        
-        btn_observation = ctk.CTkButton(self.formatting_toolbar, text="ℹ️ Observação", width=115, height=24, fg_color="#3498db", hover_color="#2980b9", font=("Arial", 11, "bold"), command=lambda: self.insert_formatting_tag("[observação]", "[/observação]"))
+        self.formatting_toolbar.grid(row=2, column=0, sticky="ew", padx=15, pady=(4, 2))
+
+        # Linha 1: formatação de texto e listas
+        text_tools = ctk.CTkFrame(self.formatting_toolbar, fg_color="transparent")
+        text_tools.pack(fill="x", pady=(0, 4))
+
+        text_tool_specs = [
+            ("B", 34, ("Arial", 12, "bold"), lambda: self.insert_formatting_tag("**", "**")),
+            ("I", 34, ("Arial", 12, "italic"), lambda: self.insert_formatting_tag("_", "_")),
+            ("U", 34, ("Arial", 12, "underline"), lambda: self.insert_formatting_tag("++", "++")),
+            ("Grifar 🖍️", 80, ("Arial", 11), lambda: self.insert_formatting_tag("==", "==")),
+            ("• Lista", 70, ("Arial", 11), lambda: self.toggle_list_prefix(ordered=False)),
+            ("1. Lista", 75, ("Arial", 11), lambda: self.toggle_list_prefix(ordered=True)),
+            ("Limpar ✖️", 90, ("Arial", 11), self.clear_formatting),
+        ]
+
+        for text, width, font, command in text_tool_specs:
+            ctk.CTkButton(
+                text_tools, text=text, width=width, height=26, font=font,
+                fg_color="#34495e", hover_color="#2c3e50", command=command
+            ).pack(side="left", padx=(0, 5))
+
+        # Linha 2: adesivos (callouts)
+        flag_tools = ctk.CTkFrame(self.formatting_toolbar, fg_color="transparent")
+        flag_tools.pack(fill="x")
+
+        btn_attention = ctk.CTkButton(flag_tools, text="⚠️ Atenção", width=95, height=26, fg_color="#e74c3c", hover_color="#c0392b", font=("Arial", 11, "bold"), command=lambda: self.insert_formatting_tag("[atenção]", "[/atenção]"))
+        btn_attention.pack(side="left", padx=(0, 5))
+
+        btn_observation = ctk.CTkButton(flag_tools, text="ℹ️ Observação", width=115, height=26, fg_color="#3498db", hover_color="#2980b9", font=("Arial", 11, "bold"), command=lambda: self.insert_formatting_tag("[observação]", "[/observação]"))
         btn_observation.pack(side="left", padx=5)
-        
-        btn_concept = ctk.CTkButton(self.formatting_toolbar, text="💡 Conceito", width=95, height=24, fg_color="#2ecc71", hover_color="#27ae60", font=("Arial", 11, "bold"), command=lambda: self.insert_formatting_tag("[conceito]", "[/conceito]"))
+
+        btn_concept = ctk.CTkButton(flag_tools, text="💡 Conceito", width=95, height=26, fg_color="#2ecc71", hover_color="#27ae60", font=("Arial", 11, "bold"), command=lambda: self.insert_formatting_tag("[conceito]", "[/conceito]"))
         btn_concept.pack(side="left", padx=5)
-        
-        self.desc_textbox = ctk.CTkTextbox(self.details_panel, height=75, undo=True)
+
+        self.desc_textbox = ctk.CTkTextbox(self.details_panel, height=self.DESC_TEXTBOX_HEIGHT_NORMAL, undo=True, font=("Arial", 13))
         self.desc_textbox.grid(row=3, column=0, sticky="nsew", padx=15, pady=(2, 10))
         self.desc_textbox.bind("<KeyRelease>", self.sync_step_data)
-        
+
+        # Atalhos de teclado padrão de edição
+        self.desc_textbox.bind("<Control-b>", lambda e: self._shortcut_format("**", "**"))
+        self.desc_textbox.bind("<Control-i>", lambda e: self._shortcut_format("_", "_"))
+        self.desc_textbox.bind("<Control-u>", lambda e: self._shortcut_format("++", "++"))
+
         self.selected_attachment_data = None
+
+    def toggle_description_size(self):
+        """
+        Alterna a área de digitação entre o tamanho normal e expandido.
+        """
+        self.desc_expanded = not getattr(self, "desc_expanded", False)
+
+        if self.desc_expanded:
+            self.details_panel.configure(height=self.DESC_PANEL_HEIGHT_EXPANDED)
+            self.desc_textbox.configure(height=self.DESC_TEXTBOX_HEIGHT_EXPANDED)
+            self.btn_expand_desc.configure(text="Recolher ⤡")
+        else:
+            self.details_panel.configure(height=self.DESC_PANEL_HEIGHT_NORMAL)
+            self.desc_textbox.configure(height=self.DESC_TEXTBOX_HEIGHT_NORMAL)
+            self.btn_expand_desc.configure(text="Expandir ⤢")
+
+    def _shortcut_format(self, start_tag, end_tag):
+        self.insert_formatting_tag(start_tag, end_tag)
+        return "break"
 
     def insert_formatting_tag(self, start_tag, end_tag):
         """
@@ -388,6 +451,81 @@ class DocumentadorApp(ctk.CTk):
             
         self.sync_step_data()
 
+    def toggle_list_prefix(self, ordered=False):
+        """
+        Aplica ou remove marcadores de lista nas linhas selecionadas (ou na linha atual).
+        """
+        if self.current_step_index is None:
+            return
+
+        textbox = self.desc_textbox._textbox
+
+        try:
+            first_line = int(textbox.index("sel.first").split('.')[0])
+            last_line = int(textbox.index("sel.last").split('.')[0])
+        except tk.TclError:
+            first_line = last_line = int(textbox.index("insert").split('.')[0])
+
+        bullet_re = re.compile(BULLET_LINE_RE)
+        numbered_re = re.compile(NUMBERED_LINE_RE)
+
+        item_number = 0
+        for line_no in range(first_line, last_line + 1):
+            start = f"{line_no}.0"
+            end = f"{line_no}.end"
+            line = textbox.get(start, end)
+
+            if not line.strip():
+                continue
+
+            bullet_match = bullet_re.match(line)
+            numbered_match = numbered_re.match(line)
+            content = (bullet_match or numbered_match).group(1) if (bullet_match or numbered_match) else line.strip()
+
+            # Clicar novamente no mesmo tipo de lista remove o marcador
+            already_applied = bool(numbered_match) if ordered else bool(bullet_match)
+            if already_applied:
+                new_line = content
+            elif ordered:
+                item_number += 1
+                new_line = f"{item_number}. {content}"
+            else:
+                new_line = f"- {content}"
+
+            textbox.delete(start, end)
+            textbox.insert(start, new_line)
+
+        textbox.focus_set()
+        self.sync_step_data()
+
+    def clear_formatting(self):
+        """
+        Remove as marcações de formatação da seleção (ou da linha atual).
+        """
+        if self.current_step_index is None:
+            return
+
+        textbox = self.desc_textbox._textbox
+
+        try:
+            start_idx = textbox.index("sel.first")
+            end_idx = textbox.index("sel.last")
+        except tk.TclError:
+            line_no = int(textbox.index("insert").split('.')[0])
+            start_idx, end_idx = f"{line_no}.0", f"{line_no}.end"
+
+        raw = textbox.get(start_idx, end_idx)
+
+        cleaned = raw.replace("**", "").replace("++", "").replace("==", "")
+        cleaned = re.sub(r"(?<![\w_])_|_(?![\w_])", "", cleaned)
+        cleaned = re.sub(r"\[/?(?:atenção|atencao|observação|observacao|conceito)\]", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"(?m)^\s*(?:[-*]|\d+[.)])\s+", "", cleaned)
+
+        textbox.delete(start_idx, end_idx)
+        textbox.insert(start_idx, cleaned)
+        textbox.focus_set()
+        self.sync_step_data()
+
     def apply_formatting_tags(self, event=None):
         """
         Analisa o conteúdo do desc_textbox e aplica tags de formatação e adesivos visuais.
@@ -400,10 +538,16 @@ class DocumentadorApp(ctk.CTk):
         
         # 1. Configurar tags de estilo
         if "bold" not in textbox.tag_names():
-            textbox.tag_configure("bold", font=("Arial", 12, "bold"))
+            textbox.tag_configure("bold", font=("Arial", 13, "bold"))
+        if "italic" not in textbox.tag_names():
+            textbox.tag_configure("italic", font=("Arial", 13, "italic"))
+        if "underline" not in textbox.tag_names():
+            textbox.tag_configure("underline", underline=True)
+        if "list_item" not in textbox.tag_names():
+            textbox.tag_configure("list_item", lmargin1=18, lmargin2=32)
         if "highlight" not in textbox.tag_names():
             textbox.tag_configure("highlight", background="#fef08a", foreground="#0f172a")
-            
+
         if "flag_attention" not in textbox.tag_names():
             textbox.tag_configure(
                 "flag_attention", 
@@ -439,7 +583,7 @@ class DocumentadorApp(ctk.CTk):
             )
             
         # 2. Remover tags antigas
-        for tag in ["bold", "highlight", "flag_attention", "flag_observation", "flag_concept"]:
+        for tag in ["bold", "italic", "underline", "list_item", "highlight", "flag_attention", "flag_observation", "flag_concept"]:
             textbox.tag_remove(tag, "1.0", "end")
             
         content = textbox.get("1.0", "end-1c")
@@ -454,27 +598,46 @@ class DocumentadorApp(ctk.CTk):
             end_tk = get_tkinter_index(content, match.end())
             textbox.tag_add("bold", start_tk, end_tk)
             
-        # 4. Aplicar Destaques (Grifado)
+        # 4. Aplicar Itálicos
+        for match in re.finditer(ITALIC_RE, content):
+            start_tk = get_tkinter_index(content, match.start())
+            end_tk = get_tkinter_index(content, match.end())
+            textbox.tag_add("italic", start_tk, end_tk)
+
+        # 5. Aplicar Sublinhados
+        for match in re.finditer(r"\+\+(.*?)\+\+", content, re.DOTALL):
+            start_tk = get_tkinter_index(content, match.start())
+            end_tk = get_tkinter_index(content, match.end())
+            textbox.tag_add("underline", start_tk, end_tk)
+
+        # 6. Aplicar indentação nos itens de lista
+        for pattern in [BULLET_LINE_RE, NUMBERED_LINE_RE]:
+            for match in re.finditer(pattern, content, re.MULTILINE):
+                start_tk = get_tkinter_index(content, match.start())
+                end_tk = get_tkinter_index(content, match.end())
+                textbox.tag_add("list_item", start_tk, end_tk)
+
+        # 7. Aplicar Destaques (Grifado)
         for match in re.finditer(r"==(.*?)==", content, re.DOTALL):
             start_tk = get_tkinter_index(content, match.start())
             end_tk = get_tkinter_index(content, match.end())
             textbox.tag_add("highlight", start_tk, end_tk)
             
-        # 5. Aplicar Adesivo Atenção
+        # 8. Aplicar Adesivo Atenção
         for pattern in [r"\[atenção\](.*?)\[/atenção\]", r"\[atencao\](.*?)\[/atencao\]"]:
             for match in re.finditer(pattern, content, re.DOTALL | re.IGNORECASE):
                 start_tk = get_tkinter_index(content, match.start())
                 end_tk = get_tkinter_index(content, match.end())
                 textbox.tag_add("flag_attention", start_tk, end_tk)
                 
-        # 6. Aplicar Adesivo Observação
+        # 9. Aplicar Adesivo Observação
         for pattern in [r"\[observação\](.*?)\[/observação\]", r"\[observacao\](.*?)\[/observacao\]"]:
             for match in re.finditer(pattern, content, re.DOTALL | re.IGNORECASE):
                 start_tk = get_tkinter_index(content, match.start())
                 end_tk = get_tkinter_index(content, match.end())
                 textbox.tag_add("flag_observation", start_tk, end_tk)
                 
-        # 7. Aplicar Adesivo Conceito
+        # 10. Aplicar Adesivo Conceito
         for match in re.finditer(r"\[conceito\](.*?)\[/conceito\]", content, re.DOTALL | re.IGNORECASE):
             start_tk = get_tkinter_index(content, match.start())
             end_tk = get_tkinter_index(content, match.end())

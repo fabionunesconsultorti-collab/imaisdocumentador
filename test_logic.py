@@ -152,6 +152,34 @@ class TestDocumentadorLogic(unittest.TestCase):
         )
         # Deve gerar pelo menos dois flowables (o texto normal e a tabela do callout)
         self.assertGreaterEqual(len(pdf_flowables), 2)
+
+    def test_italic_underline_and_lists_parsing(self):
+        html_desc = parse_description_to_html(
+            "Clique em _Novo_ e preencha ++todos++ os campos:\n"
+            "- Nome\n"
+            "- CNPJ\n"
+            "Em seguida:\n"
+            "1. Salvar\n"
+            "2. Validar"
+        )
+        self.assertIn("<em>Novo</em>", html_desc)
+        self.assertIn("<u>todos</u>", html_desc)
+        self.assertIn("<ul><li>Nome</li><li>CNPJ</li></ul>", html_desc)
+        self.assertIn("<ol><li>Salvar</li><li>Validar</li></ol>", html_desc)
+
+        # Underscores no meio de palavras não devem virar itálico
+        self.assertEqual(parse_description_to_html("campo nome_do_cliente"), "campo nome_do_cliente")
+
+        from reportlab.lib.styles import getSampleStyleSheet
+        styles = getSampleStyleSheet()
+        pdf_flowables = parse_description_to_pdf_flowables(
+            "Passos:\n- Primeiro\n- Segundo",
+            styles['Normal'],
+            available_width=500
+        )
+        item_texts = [getattr(f, "text", "") for f in pdf_flowables]
+        self.assertTrue(any("• Primeiro" in t for t in item_texts))
+        self.assertTrue(any("• Segundo" in t for t in item_texts))
  
 if __name__ == "__main__":
     unittest.main()
