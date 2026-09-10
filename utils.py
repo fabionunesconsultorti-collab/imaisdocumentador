@@ -61,7 +61,12 @@ def grab_clipboard_image() -> Image.Image | None:
         # Tentar wl-paste (Wayland)
         try:
             process = subprocess.Popen(['wl-paste', '-t', 'image/png'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            stdout, stderr = process.communicate()
+            try:
+                stdout, stderr = process.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
+                stdout = b""
             if process.returncode == 0 and len(stdout) > 0:
                 img = Image.open(io.BytesIO(stdout))
                 img.load()
@@ -72,7 +77,12 @@ def grab_clipboard_image() -> Image.Image | None:
         # Tentar xclip (X11)
         try:
             process = subprocess.Popen(['xclip', '-selection', 'clipboard', '-t', 'image/png', '-o'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            stdout, stderr = process.communicate()
+            try:
+                stdout, stderr = process.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
+                stdout = b""
             if process.returncode == 0 and len(stdout) > 0:
                 img = Image.open(io.BytesIO(stdout))
                 img.load()

@@ -37,7 +37,7 @@ class DocumentadorApp(ctk.CTk):
         super().__init__()
         
         # Configurações da Janela
-        self.title("I+ documentador")
+        self.title(f"I+ documentador v{utils.APP_VERSION}")
         self.geometry("1200x800")
         self.minimum_size = (1000, 700)
         self.minsize(self.minimum_size[0], self.minimum_size[1])
@@ -106,11 +106,11 @@ class DocumentadorApp(ctk.CTk):
         
         self.btn_save = ctk.CTkButton(self.top_bar, text="Salvar Documento 💾", width=130, command=self.save_document, fg_color="#2ecc71", hover_color="#27ae60")
         self.btn_save.pack(side="left", padx=5, pady=8)
-        
+
+        self.btn_save_as = ctk.CTkButton(self.top_bar, text="Salvar Como 📁", width=120, command=self.save_document_as, fg_color="#34495e", hover_color="#2c3e50")
+        self.btn_save_as.pack(side="left", padx=5, pady=8)
+
         # Botões de Exportação
-        self.btn_link_wiki = ctk.CTkButton(self.top_bar, text="Vincular à Wiki 📚", width=130, command=self.link_document_to_wiki, fg_color="#9b59b6", hover_color="#8e44ad")
-        self.btn_link_wiki.pack(side="left", padx=15, pady=8)
-        
         self.btn_export_pdf = ctk.CTkButton(self.top_bar, text="Exportar PDF 📕", width=120, command=self.export_pdf, fg_color="#e67e22", hover_color="#d35400")
         self.btn_export_pdf.pack(side="left", padx=5, pady=8)
         
@@ -987,12 +987,15 @@ class DocumentadorApp(ctk.CTk):
     def toggle_clipboard_monitoring(self):
         if self.monitor_switch.get():
             self.monitoring_clipboard = True
-            # Inicializar com o hash atual na thread principal (rápido)
-            img = utils.grab_clipboard_image()
-            if img:
-                self.last_clipboard_hash = self.get_image_hash(img)
-            else:
-                self.last_clipboard_hash = None
+
+            # Ler o clipboard pode ser lento (ou travar) dependendo da ferramenta
+            # do sistema operacional, então isso é feito em background para não
+            # congelar a UI logo na inicialização do app.
+            def init_hash():
+                img = utils.grab_clipboard_image()
+                self.last_clipboard_hash = self.get_image_hash(img) if img else None
+
+            threading.Thread(target=init_hash, daemon=True).start()
             # Iniciar polling
             self.poll_clipboard()
         else:
@@ -1166,6 +1169,23 @@ class DocumentadorApp(ctk.CTk):
             
         try:
             self.document.save(self.document.filepath)
+            self.update_title_bar()
+            return True
+        except Exception as e:
+            messagebox.showerror("Erro ao Salvar", f"Não foi possível salvar o arquivo:\n{e}")
+            return False
+
+    def save_document_as(self) -> bool:
+        filepath = filedialog.asksaveasfilename(
+            title="Salvar Documento Como",
+            defaultextension=".docp",
+            filetypes=[("Documento de Processos ERP", "*.docp")]
+        )
+        if not filepath:
+            return False
+
+        try:
+            self.document.save(filepath)
             self.update_title_bar()
             return True
         except Exception as e:
