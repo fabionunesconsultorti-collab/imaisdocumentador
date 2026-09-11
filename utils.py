@@ -7,7 +7,7 @@ import json
 import urllib.request
 from PIL import Image, ImageGrab
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 GITHUB_REPO = "fabionunesconsultorti-collab/imaisdocumentador"
 
 
