@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import threading
 import webbrowser
 import tkinter as tk
@@ -33,6 +34,9 @@ class DocumentadorApp(ctk.CTk):
     DESC_TEXTBOX_HEIGHT_NORMAL = 150
     DESC_TEXTBOX_HEIGHT_EXPANDED = 370
 
+    # Intervalo entre autosaves de recuperação (2 minutos)
+    AUTOSAVE_INTERVAL_MS = 120_000
+
     def __init__(self):
         super().__init__()
         
@@ -54,9 +58,14 @@ class DocumentadorApp(ctk.CTk):
         # Objeto de dados
         self.document = Document()
         self.current_step_index = None
-        
+
         # Referências de imagens para thumbnails da lista lateral para evitar coleta de GC
         self.thumb_images = []
+
+        # Autosave de recuperação (não confundir com o arquivo real do usuário)
+        autosave_dir = utils.get_autosave_dir()
+        self._autosave_docp_path = os.path.join(autosave_dir, "autosave.docp")
+        self._autosave_meta_path = os.path.join(autosave_dir, "autosave.json")
         
         # Configurar Grid principal (linha 0: top_bar, linha 1: doc_metadata_bar, linha 2: sidebar/workspace)
         self.grid_rowconfigure(2, weight=1)
@@ -88,9 +97,16 @@ class DocumentadorApp(ctk.CTk):
         
         # Atualizar a UI para estado inicial (vazio)
         self.update_ui_state()
-        
+
         # Iniciar monitoramento automático de prints por padrão
         self.toggle_clipboard_monitoring()
+
+        # Verificar se há uma recuperação automática de uma sessão anterior
+        # (ex: fechamento inesperado, queda de energia, travamento do sistema)
+        self.after(300, self._check_autosave_recovery)
+
+        # Iniciar o ciclo periódico de autosave de recuperação
+        self.after(self.AUTOSAVE_INTERVAL_MS, self._autosave_tick)
 
     def create_top_bar(self):
         # Frame do topo
@@ -277,7 +293,13 @@ class DocumentadorApp(ctk.CTk):
         
         self.tool_arrow = ctk.CTkRadioButton(self.toolbar, text="Seta 🏹", variable=self.tool_var, value="arrow", command=self.change_tool)
         self.tool_arrow.pack(side="left", padx=10, pady=10)
-        
+
+        self.tool_crop = ctk.CTkRadioButton(self.toolbar, text="Cortar ✂️", variable=self.tool_var, value="crop", command=self.change_tool)
+        self.tool_crop.pack(side="left", padx=10, pady=10)
+
+        self.tool_blur = ctk.CTkRadioButton(self.toolbar, text="Borrar 🔒", variable=self.tool_var, value="blur", command=self.change_tool)
+        self.tool_blur.pack(side="left", padx=10, pady=10)
+
         # Checkbox para numeração sequencial de setas
         self.num_arrows_var = ctk.BooleanVar(value=True)
         self.cb_num_arrows = ctk.CTkCheckBox(
@@ -1170,6 +1192,7 @@ class DocumentadorApp(ctk.CTk):
         try:
             self.document.save(self.document.filepath)
             self.update_title_bar()
+            self._clear_autosave()
             return True
         except Exception as e:
             messagebox.showerror("Erro ao Salvar", f"Não foi possível salvar o arquivo:\n{e}")
@@ -1187,6 +1210,7 @@ class DocumentadorApp(ctk.CTk):
         try:
             self.document.save(filepath)
             self.update_title_bar()
+            self._clear_autosave()
             return True
         except Exception as e:
             messagebox.showerror("Erro ao Salvar", f"Não foi possível salvar o arquivo:\n{e}")
@@ -1199,12 +1223,13 @@ class DocumentadorApp(ctk.CTk):
         """
         if self.document.changed:
             res = messagebox.askyesnocancel(
-                "Salvar Alterações", 
+                "Salvar Alterações",
                 "Há alterações não salvas no documento.\nVocê deseja salvá-las agora?"
             )
             if res is True:  # Sim
                 return self.save_document()
             elif res is False:  # Não
+                self._clear_autosave()
                 return True
             else:  # Cancelar
                 return False
@@ -1213,6 +1238,91 @@ class DocumentadorApp(ctk.CTk):
     def on_closing(self):
         if self.check_unsaved_changes():
             self.destroy()
+
+    # --- Autosave de Recuperação ---
+
+    def _autosave_tick(self):
+        """
+        Salva periodicamente uma cópia de recuperação do documento atual (sem
+        afetar o arquivo real do usuário) para reduzir a perda de trabalho em
+        caso de travamento ou fechamento inesperado do sistema.
+        """
+        try:
+            if self.document.changed and len(self.document.steps) > 0:
+                self.document.save_copy(self._autosave_docp_path)
+                with open(self._autosave_meta_path, "w", encoding="utf-8") as f:
+                    json.dump({"original_filepath": self.document.filepath}, f)
+        except Exception as e:
+            print(f"Erro no autosave de recuperação: {e}")
+        finally:
+            self.after(self.AUTOSAVE_INTERVAL_MS, self._autosave_tick)
+
+    def _check_autosave_recovery(self):
+        """
+        Ao iniciar, verifica se existe uma cópia de recuperação de uma sessão
+        anterior e oferece para restaurá-la.
+        """
+        if not os.path.exists(self._autosave_docp_path):
+            return
+
+        restaurar = messagebox.askyesno(
+            "Recuperação Automática",
+            "Foi encontrado um documento salvo automaticamente de uma sessão "
+            "anterior que pode não ter sido encerrada corretamente "
+            "(travamento, reinicialização, queda de energia etc.).\n\n"
+            "Deseja recuperar essas alterações agora?"
+        )
+
+        if not restaurar:
+            self._clear_autosave()
+            return
+
+        try:
+            self.document.load(self._autosave_docp_path)
+
+            original_filepath = None
+            if os.path.exists(self._autosave_meta_path):
+                try:
+                    with open(self._autosave_meta_path, "r", encoding="utf-8") as f:
+                        original_filepath = json.load(f).get("original_filepath")
+                except Exception:
+                    pass
+
+            # A recuperação não é, por si só, um arquivo salvo pelo usuário:
+            # aponta de volta para o arquivo original (se houver) e mantém o
+            # documento marcado como alterado até que o usuário salve de fato.
+            self.document.filepath = original_filepath
+            self.document.changed = True
+            self.current_step_index = 0 if self.document.steps else None
+
+            self.doc_title_entry.delete(0, "end")
+            self.doc_title_entry.insert(0, self.document.title)
+            self.doc_subtitle_entry.delete(0, "end")
+            self.doc_subtitle_entry.insert(0, self.document.subtitle)
+            self.doc_category_entry.delete(0, "end")
+            self.doc_category_entry.insert(0, getattr(self.document, "category", ""))
+            self.doc_tags_entry.delete(0, "end")
+            self.doc_tags_entry.insert(0, getattr(self.document, "tags", ""))
+            self.doc_author_entry.delete(0, "end")
+            self.doc_author_entry.insert(0, getattr(self.document, "author", ""))
+            self.num_arrows_var.set(self.document.num_arrows)
+            self.editor_canvas.set_num_arrows(self.document.num_arrows)
+
+            self.rebuild_sidebar_list()
+            self.update_title_bar()
+        except Exception as e:
+            messagebox.showerror(
+                "Erro na Recuperação",
+                f"Não foi possível recuperar o autosave automaticamente:\n{e}"
+            )
+
+    def _clear_autosave(self):
+        for path in (self._autosave_docp_path, self._autosave_meta_path):
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception:
+                pass
 
     # --- Operações de Exportação ---
 

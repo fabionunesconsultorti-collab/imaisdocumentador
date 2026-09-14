@@ -107,9 +107,22 @@ class Document:
 
     def save(self, filepath: str):
         """
-        Salva o documento em um arquivo .docp (formato ZIP compactado contendo JSON e imagens).
+        Salva o documento em um arquivo .docp (formato ZIP compactado contendo JSON e imagens),
+        atualizando o caminho do arquivo atual e limpando o marcador de alterações pendentes.
         """
+        self._write_to(filepath)
         self.filepath = filepath
+        self.changed = False
+
+    def save_copy(self, filepath: str):
+        """
+        Salva uma cópia do documento em filepath sem alterar o caminho do arquivo
+        atual nem o marcador de alterações pendentes. Usado pelo autosave de
+        recuperação, que não deve interferir no fluxo normal de salvar do usuário.
+        """
+        self._write_to(filepath)
+
+    def _write_to(self, filepath: str):
         with zipfile.ZipFile(filepath, 'w', zipfile.ZIP_DEFLATED) as zipf:
             metadata = {
                 "title": self.title,
@@ -156,8 +169,6 @@ class Document:
             # Salvar o document.json no zip
             metadata_str = json.dumps(metadata, indent=4, ensure_ascii=False)
             zipf.writestr("document.json", metadata_str.encode('utf-8'))
-            
-        self.changed = False
 
     def load(self, filepath: str):
         """

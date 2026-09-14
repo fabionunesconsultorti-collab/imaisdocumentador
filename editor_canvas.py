@@ -1,6 +1,7 @@
 import tkinter as tk
+from tkinter import messagebox
 import customtkinter as ctk
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageFilter
 
 class TextDialog(ctk.CTkToplevel):
     def __init__(self, parent, title="Texto", initial_text="", size=16):
@@ -82,7 +83,7 @@ class EditorCanvas(ctk.CTkFrame):
         self.on_changed_callback = on_changed_callback
         
         self.step = None
-        self.tool = "select"  # select, arrow, text
+        self.tool = "select"  # select, arrow, text, crop, blur
         self.num_arrows = True
         
         # Configurações de desenho
@@ -158,19 +159,24 @@ class EditorCanvas(ctk.CTkFrame):
     def set_thickness(self, width):
         self.current_width = width
         
-    def save_history(self):
+    def save_history(self, include_image=False):
         """
-        Salva o estado atual das anotações no histórico para permitir o Desfazer (Ctrl+Z).
+        Salva o estado atual das anotações (e, quando a ação altera os pixels
+        da imagem — corte ou borrão —, uma cópia da imagem) no histórico para
+        permitir o Desfazer (Ctrl+Z).
         """
         if self.step:
             import copy
+            entry = {"annotations": copy.deepcopy(self.step.annotations)}
+            if include_image:
+                entry["image"] = self.step.image.copy()
             if len(self.history) >= 50:
                 self.history.pop(0)
-            self.history.append(copy.deepcopy(self.step.annotations))
+            self.history.append(entry)
 
     def undo(self, event=None):
         """
-        Desfaz a última alteração nas anotações do passo atual.
+        Desfaz a última alteração nas anotações (e na imagem, se aplicável) do passo atual.
         """
         if event and event.widget:
             # Se o foco estiver em um campo de texto, não interfere no Ctrl+Z nativo dele
@@ -180,22 +186,16 @@ class EditorCanvas(ctk.CTkFrame):
                     return
             except Exception:
                 pass
-                
+
         if self.step and self.history:
-            previous_annotations = self.history.pop()
-            self.step.annotations = previous_annotations
+            previous = self.history.pop()
+            self.step.annotations = previous["annotations"]
+            if "image" in previous:
+                self.step.image = previous["image"]
             self.selected_anno_id = None
             self.redraw()
             self.notify_change()
             return "break"
-        if self.selected_anno_id and self.step:
-            # Alterar espessura do elemento selecionado (se for seta)
-            for anno in self.step.annotations:
-                if anno.get("id") == self.selected_anno_id and anno.get("type") == "arrow":
-                    anno["width"] = width
-                    self.redraw()
-                    self.notify_change()
-                    break
 
     def set_font_size(self, size):
         self.current_size = size
@@ -403,13 +403,21 @@ class EditorCanvas(ctk.CTkFrame):
             if dialog.result:
                 self.save_history() # Salvar histórico antes de adicionar texto
                 self.step.add_text(
-                    ix, iy, 
-                    dialog.result["text"], 
-                    color=self.current_color, 
+                    ix, iy,
+                    dialog.result["text"],
+                    color=self.current_color,
                     size=dialog.result["size"]
                 )
                 self.redraw()
                 self.notify_change()
+
+        elif self.tool in ("crop", "blur"):
+            self.drag_start_pos = (event.x, event.y)
+            outline_color = "#ffcc00" if self.tool == "crop" else "#00bcd4"
+            self.temp_draw_id = self.canvas.create_rectangle(
+                event.x, event.y, event.x, event.y,
+                outline=outline_color, width=2, dash=(6, 4)
+            )
 
     def on_drag(self, event):
         if self.tool == "select" and self.selected_anno_id and self.drag_start_pos and getattr(self, 'initial_anno_coords', None):
@@ -441,6 +449,10 @@ class EditorCanvas(ctk.CTkFrame):
             x1, y1 = self.drag_start_pos
             self.canvas.coords(self.temp_draw_id, x1, y1, event.x, event.y)
 
+        elif self.tool in ("crop", "blur") and self.drag_start_pos and self.temp_draw_id:
+            x1, y1 = self.drag_start_pos
+            self.canvas.coords(self.temp_draw_id, x1, y1, event.x, event.y)
+
     def on_release(self, event):
         if self.tool == "select" and self.selected_anno_id and self.drag_start_pos:
             self.drag_start_pos = None
@@ -463,12 +475,107 @@ class EditorCanvas(ctk.CTkFrame):
                 
                 self.save_history() # Salvar histórico antes de desenhar seta
                 self.step.add_arrow(
-                    ix1, iy1, ix2, iy2, 
-                    color=self.current_color, 
+                    ix1, iy1, ix2, iy2,
+                    color=self.current_color,
                     width=self.current_width
                 )
                 self.redraw()
                 self.notify_change("arrow")
+
+        elif self.tool in ("crop", "blur") and self.drag_start_pos and self.temp_draw_id:
+            x1, y1 = self.drag_start_pos
+            x2, y2 = event.x, event.y
+
+            self.canvas.delete(self.temp_draw_id)
+            self.temp_draw_id = None
+            self.drag_start_pos = None
+
+            if ((x2 - x1)**2 + (y2 - y1)**2)**0.5 > 10:
+                ix1, iy1 = self.canvas_to_img_coords(min(x1, x2), min(y1, y2))
+                ix2, iy2 = self.canvas_to_img_coords(max(x1, x2), max(y1, y2))
+
+                if self.tool == "crop":
+                    self.request_crop(ix1, iy1, ix2, iy2)
+                else:
+                    self.apply_blur(ix1, iy1, ix2, iy2)
+
+    def request_crop(self, x1, y1, x2, y2):
+        """
+        Corta a imagem do passo para a área selecionada, após confirmação do
+        usuário. Anotações fora da nova área são descartadas; as demais têm
+        suas coordenadas ajustadas para o novo espaço da imagem.
+        """
+        if not self.step or not self.step.image:
+            return
+
+        ow, oh = self.step.image.size
+        x1, x2 = max(0, min(x1, ow)), max(0, min(x2, ow))
+        y1, y2 = max(0, min(y1, oh)), max(0, min(y2, oh))
+        if x2 - x1 < 10 or y2 - y1 < 10:
+            return
+
+        confirm = messagebox.askyesno(
+            "Cortar Imagem",
+            "Aplicar o corte na área selecionada?\n\n"
+            "A parte da imagem fora da seleção será descartada "
+            "(é possível desfazer com Ctrl+Z)."
+        )
+        if not confirm:
+            return
+
+        self.save_history(include_image=True)
+
+        self.step.image = self.step.image.crop((x1, y1, x2, y2))
+
+        new_w, new_h = x2 - x1, y2 - y1
+        kept_annotations = []
+        for anno in self.step.annotations:
+            if anno.get("type") == "arrow":
+                ax1, ay1, ax2, ay2 = anno["x1"], anno["y1"], anno["x2"], anno["y2"]
+                # Manter a seta se ao menos uma das pontas estava dentro da área cortada
+                if (x1 <= ax1 <= x2 and y1 <= ay1 <= y2) or (x1 <= ax2 <= x2 and y1 <= ay2 <= y2):
+                    anno["x1"] = max(0, min(new_w, ax1 - x1))
+                    anno["y1"] = max(0, min(new_h, ay1 - y1))
+                    anno["x2"] = max(0, min(new_w, ax2 - x1))
+                    anno["y2"] = max(0, min(new_h, ay2 - y1))
+                    kept_annotations.append(anno)
+            elif anno.get("type") == "text":
+                tx, ty = anno["x"], anno["y"]
+                if x1 <= tx <= x2 and y1 <= ty <= y2:
+                    anno["x"] = tx - x1
+                    anno["y"] = ty - y1
+                    kept_annotations.append(anno)
+            else:
+                kept_annotations.append(anno)
+
+        self.step.annotations = kept_annotations
+        self.selected_anno_id = None
+        self.redraw()
+        self.notify_change("crop")
+
+    def apply_blur(self, x1, y1, x2, y2):
+        """
+        Aplica um desfoque permanente na área selecionada da imagem do passo,
+        para ocultar campos sensíveis (senhas, documentos, dados de clientes etc.).
+        """
+        if not self.step or not self.step.image:
+            return
+
+        ow, oh = self.step.image.size
+        x1, x2 = max(0, min(x1, ow)), max(0, min(x2, ow))
+        y1, y2 = max(0, min(y1, oh)), max(0, min(y2, oh))
+        if x2 - x1 < 6 or y2 - y1 < 6:
+            return
+
+        self.save_history(include_image=True)
+
+        radius = max(8, int(min(x2 - x1, y2 - y1) / 4))
+        region = self.step.image.crop((x1, y1, x2, y2))
+        blurred = region.filter(ImageFilter.GaussianBlur(radius=radius))
+        self.step.image.paste(blurred, (x1, y1))
+
+        self.redraw()
+        self.notify_change("blur")
 
     def on_double_click(self, event):
         if not self.step or self.tool != "select" or not self.selected_anno_id:

@@ -7,7 +7,7 @@ import json
 import urllib.request
 from PIL import Image, ImageGrab
 
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 GITHUB_REPO = "fabionunesconsultorti-collab/imaisdocumentador"
 
 
@@ -167,3 +167,21 @@ def get_resource_path(relative_path):
     except Exception:
         base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, relative_path)
+
+
+def get_autosave_dir():
+    """
+    Retorna (criando se necessário) o diretório gravável usado para o
+    autosave de recuperação, em uma pasta de dados de usuário apropriada
+    para cada sistema operacional.
+    """
+    if sys.platform.startswith("win"):
+        base = os.environ.get("APPDATA", os.path.expanduser("~"))
+    elif sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Application Support")
+    else:
+        base = os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share"))
+
+    path = os.path.join(base, "Documentador", "autosave")
+    os.makedirs(path, exist_ok=True)
+    return path
